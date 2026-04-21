@@ -1,0 +1,4 @@
+aiogram
+apscheduler
+python-dateutil
+aiosqlite
