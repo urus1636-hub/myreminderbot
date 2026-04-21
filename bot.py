@@ -122,10 +122,7 @@ async def send_reminder(user_id: int, text: str, reminder_id: int):
     finally:
         await delete_reminder(reminder_id, user_id)
 
-# ---------- Вспомогательная функция проверки, похоже ли на дату ----------
 def is_likely_datetime(text: str) -> bool:
-    """Возвращает True, если текст содержит цифры и разделители (.-:/)."""
-    # Простая эвристика: содержит цифры и хотя бы один разделитель
     return bool(re.search(r'\d', text)) and bool(re.search(r'[.\-:/]', text))
 
 # ---------- Команды и главное меню ----------
@@ -172,7 +169,6 @@ async def start_create(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.message(ReminderForm.waiting_for_text)
 async def process_text(message: types.Message, state: FSMContext):
-    # Любой текст принимаем как название, даже если он состоит из цифр
     await state.update_data(reminder_text=message.text)
     await state.set_state(ReminderForm.waiting_for_time)
     await message.answer(
@@ -187,7 +183,6 @@ async def process_text(message: types.Message, state: FSMContext):
 async def process_time(message: types.Message, state: FSMContext):
     time_str = message.text.strip()
 
-    # Если ввод вообще не похож на дату, просим ввести нормально
     if not is_likely_datetime(time_str):
         await message.answer(
             "❌ Пожалуйста, введи дату и время в формате *ДД.ММ.ГГГГ ЧЧ:ММ*.\n"
@@ -195,7 +190,7 @@ async def process_time(message: types.Message, state: FSMContext):
             parse_mode="Markdown",
             reply_markup=back_to_menu_button()
         )
-        return  # остаёмся в waiting_for_time
+        return
 
     try:
         remind_at = parser.parse(time_str, dayfirst=True)
@@ -375,7 +370,7 @@ async def process_edit_time(message: types.Message, state: FSMContext):
     )
     await state.clear()
 
-# ---------- Быстрое создание через текст ----------
+# ---------- Быстрое создание через текст (только если нет активного состояния) ----------
 @dp.message(StateFilter(None))
 async def handle_any_text(message: types.Message, state: FSMContext):
     await state.update_data(reminder_text=message.text)
