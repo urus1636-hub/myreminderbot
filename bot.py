@@ -14,7 +14,7 @@ import aiosqlite
 import re
 
 # ========== НАСТРОЙКИ ==========
-BOT_TOKEN = "8651845065:AAF5UKZ_zJ5zm12ykMNxT3quEaIgZqnhL9k"
+BOT_TOKEN = "8651845065:AAHp5P24eDK1f7-02Hmb8Hg8mKAidrceM-I"
 DATABASE = "reminders.db"
 # ================================
 
