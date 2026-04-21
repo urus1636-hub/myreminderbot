@@ -18,7 +18,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dateutil import parser
 
 # ========== НАСТРОЙКИ ==========
-BOT_TOKEN = "8651845065:AAHp5P24eDK1f7-02Hmb8Hg8mKAidrceM-I"  # <-- ВСТАВЬ СВОЙ ТОКЕН
+BOT_TOKEN = "8651845065:AAFYzociP_Wojmwg4MnWOn3JXunzTC-2PdM"  # <-- ВСТАВЬ СВОЙ ТОКЕН
 DATABASE = "reminders.db"
 PORT = 8000
 # ================================
