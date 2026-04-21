@@ -1,19 +1,21 @@
 import asyncio
 import logging
 import os
+import re
 from datetime import datetime
-from aiogram import Bot, Dispatcher, types, F
+
+import aiohttp
+import aiosqlite
+from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiohttp import web
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dateutil import parser
-import aiosqlite
-import re
-from aiohttp import web
 
 # ========== НАСТРОЙКИ ==========
 BOT_TOKEN = "8651845065:AAHp5P24eDK1f7-02Hmb8Hg8mKAidrceM-I"  # <-- ВСТАВЬ СВОЙ ТОКЕН
@@ -388,11 +390,24 @@ async def run_web_server():
     await site.start()
     logging.info(f"Web server started on port {PORT}")
 
+# ---------- Самопинг ----------
+async def self_ping(port: int):
+    await asyncio.sleep(30)
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"http://0.0.0.0:{port}/") as resp:
+                    logging.info(f"Self-ping: {resp.status}")
+        except Exception as e:
+            logging.warning(f"Self-ping failed: {e}")
+        await asyncio.sleep(300)
+
 # ---------- Запуск ----------
 async def main():
     await init_db()
     await load_scheduled_jobs()
     scheduler.start()
+    asyncio.create_task(self_ping(PORT))
     await asyncio.gather(
         dp.start_polling(bot),
         run_web_server()
