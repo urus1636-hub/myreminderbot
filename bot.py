@@ -98,7 +98,6 @@ async def get_reminder(reminder_id: int, user_id: int):
         return await cursor.fetchone()
 
 async def load_scheduled_jobs():
-    """Загружает ВСЕ напоминания из БД и ставит их в планировщик."""
     async with aiosqlite.connect(DATABASE) as db:
         cursor = await db.execute("SELECT id, user_id, text, remind_at FROM reminders")
         rows = await cursor.fetchall()
@@ -115,7 +114,6 @@ async def load_scheduled_jobs():
                 )
                 logging.info(f"Запланировано напоминание {rem_id} на {remind_at}")
             else:
-                # Удаляем просроченные
                 await delete_reminder(rem_id, user_id)
                 logging.info(f"Удалено просроченное напоминание {rem_id}")
 
