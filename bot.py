@@ -11,6 +11,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dateutil import parser
 import aiosqlite
+import re
 
 # ========== НАСТРОЙКИ ==========
 BOT_TOKEN = "8651845065:AAF5UKZ_zJ5zm12ykMNxT3quEaIgZqnhL9k"
@@ -121,6 +122,12 @@ async def send_reminder(user_id: int, text: str, reminder_id: int):
     finally:
         await delete_reminder(reminder_id, user_id)
 
+# ---------- Вспомогательная функция проверки, похоже ли на дату ----------
+def is_likely_datetime(text: str) -> bool:
+    """Возвращает True, если текст содержит цифры и разделители (.-:/)."""
+    # Простая эвристика: содержит цифры и хотя бы один разделитель
+    return bool(re.search(r'\d', text)) and bool(re.search(r'[.\-:/]', text))
+
 # ---------- Команды и главное меню ----------
 @dp.message(Command("start", "menu"))
 async def cmd_start(message: types.Message, state: FSMContext):
@@ -165,6 +172,7 @@ async def start_create(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.message(ReminderForm.waiting_for_text)
 async def process_text(message: types.Message, state: FSMContext):
+    # Любой текст принимаем как название, даже если он состоит из цифр
     await state.update_data(reminder_text=message.text)
     await state.set_state(ReminderForm.waiting_for_time)
     await message.answer(
@@ -178,6 +186,17 @@ async def process_text(message: types.Message, state: FSMContext):
 @dp.message(ReminderForm.waiting_for_time)
 async def process_time(message: types.Message, state: FSMContext):
     time_str = message.text.strip()
+
+    # Если ввод вообще не похож на дату, просим ввести нормально
+    if not is_likely_datetime(time_str):
+        await message.answer(
+            "❌ Пожалуйста, введи дату и время в формате *ДД.ММ.ГГГГ ЧЧ:ММ*.\n"
+            "Например: `25.12.2026 15:30`",
+            parse_mode="Markdown",
+            reply_markup=back_to_menu_button()
+        )
+        return  # остаёмся в waiting_for_time
+
     try:
         remind_at = parser.parse(time_str, dayfirst=True)
         if remind_at < datetime.now():
@@ -185,7 +204,7 @@ async def process_time(message: types.Message, state: FSMContext):
                 "⏳ Это время уже прошло. Введи будущее время:",
                 reply_markup=back_to_menu_button()
             )
-            return  # остаёмся в состоянии waiting_for_time
+            return
     except:
         await message.answer(
             "❌ Неверный формат. Попробуй снова: *ДД.ММ.ГГГГ ЧЧ:ММ*\n"
@@ -193,9 +212,8 @@ async def process_time(message: types.Message, state: FSMContext):
             parse_mode="Markdown",
             reply_markup=back_to_menu_button()
         )
-        return  # остаёмся в состоянии waiting_for_time
+        return
 
-    # Если время корректное и будущее
     data = await state.get_data()
     reminder_text = data["reminder_text"]
     user_id = message.from_user.id
@@ -307,6 +325,14 @@ async def edit_callback(callback: types.CallbackQuery, state: FSMContext):
 @dp.message(ReminderForm.editing_time)
 async def process_edit_time(message: types.Message, state: FSMContext):
     time_str = message.text.strip()
+    if not is_likely_datetime(time_str):
+        await message.answer(
+            "❌ Пожалуйста, введи дату и время в формате *ДД.ММ.ГГГГ ЧЧ:ММ*.",
+            parse_mode="Markdown",
+            reply_markup=back_to_menu_button()
+        )
+        return
+
     try:
         new_time = parser.parse(time_str, dayfirst=True)
         if new_time < datetime.now():
@@ -317,8 +343,7 @@ async def process_edit_time(message: types.Message, state: FSMContext):
             return
     except:
         await message.answer(
-            "❌ Неверный формат. Попробуй снова: *ДД.ММ.ГГГГ ЧЧ:ММ*\n"
-            "Например: `25.12.2026 15:30`",
+            "❌ Неверный формат. Попробуй снова: *ДД.ММ.ГГГГ ЧЧ:ММ*",
             parse_mode="Markdown",
             reply_markup=back_to_menu_button()
         )
