@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, StateFilter
@@ -12,10 +13,12 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dateutil import parser
 import aiosqlite
 import re
+from aiohttp import web
 
 # ========== НАСТРОЙКИ ==========
-BOT_TOKEN = "8651845065:AAHp5P24eDK1f7-02Hmb8Hg8mKAidrceM-I"
+BOT_TOKEN = "8651845065:AAHp5P24eDK1f7-02Hmb8Hg8mKAidrceM-I"  # <-- ВСТАВЬ СВОЙ ТОКЕН
 DATABASE = "reminders.db"
+PORT = 8000
 # ================================
 
 logging.basicConfig(level=logging.INFO)
@@ -58,6 +61,7 @@ async def init_db():
             )
         """)
         await db.commit()
+    logging.info("База данных инициализирована")
 
 async def add_reminder(user_id: int, text: str, remind_at: datetime) -> int:
     async with aiosqlite.connect(DATABASE) as db:
@@ -94,9 +98,11 @@ async def get_reminder(reminder_id: int, user_id: int):
         return await cursor.fetchone()
 
 async def load_scheduled_jobs():
+    """Загружает ВСЕ напоминания из БД и ставит их в планировщик."""
     async with aiosqlite.connect(DATABASE) as db:
         cursor = await db.execute("SELECT id, user_id, text, remind_at FROM reminders")
         rows = await cursor.fetchall()
+        logging.info(f"Найдено {len(rows)} напоминаний в БД")
         for rem_id, user_id, text, remind_at_str in rows:
             remind_at = datetime.fromisoformat(remind_at_str)
             if remind_at > datetime.now():
@@ -107,9 +113,14 @@ async def load_scheduled_jobs():
                     args=[user_id, text, rem_id],
                     id=f"rem_{rem_id}"
                 )
-        logging.info(f"Загружено {len(rows)} напоминаний из БД.")
+                logging.info(f"Запланировано напоминание {rem_id} на {remind_at}")
+            else:
+                # Удаляем просроченные
+                await delete_reminder(rem_id, user_id)
+                logging.info(f"Удалено просроченное напоминание {rem_id}")
 
 async def send_reminder(user_id: int, text: str, reminder_id: int):
+    logging.info(f"Сработало напоминание {reminder_id} для {user_id}")
     try:
         await bot.send_message(
             user_id,
@@ -117,6 +128,7 @@ async def send_reminder(user_id: int, text: str, reminder_id: int):
             f"Ты просил напомнить:\n"
             f"📝 «{text}»"
         )
+        logging.info(f"Напоминание {reminder_id} отправлено")
     except Exception as e:
         logging.error(f"Ошибка отправки напоминания {reminder_id}: {e}")
     finally:
@@ -125,7 +137,7 @@ async def send_reminder(user_id: int, text: str, reminder_id: int):
 def is_likely_datetime(text: str) -> bool:
     return bool(re.search(r'\d', text)) and bool(re.search(r'[.\-:/]', text))
 
-# ---------- Команды и главное меню ----------
+# ---------- Команды ----------
 @dp.message(Command("start", "menu"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
@@ -145,19 +157,12 @@ async def show_main_menu(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "help")
 async def show_help(callback: types.CallbackQuery):
-    text = (
-        "📌 *Как пользоваться:*\n\n"
-        "• *📋 Мои напоминания* – посмотреть список и управлять.\n"
-        "• *➕ Создать* – добавить новое напоминание.\n"
-        "• Просто напиши мне текст, и я сразу предложу ввести время!\n\n"
-        "В списке выбирай напоминание, чтобы удалить или изменить время."
-    )
+    text = "📌 *Как пользоваться:*\n\n• *📋 Мои напоминания* – посмотреть список и управлять.\n• *➕ Создать* – добавить новое напоминание.\n• Просто напиши мне текст, и я сразу предложу ввести время!"
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu"))
     await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=builder.as_markup())
     await callback.answer()
 
-# ---------- Создание напоминания ----------
 @dp.callback_query(F.data == "create_reminder")
 async def start_create(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(ReminderForm.waiting_for_text)
@@ -172,9 +177,7 @@ async def process_text(message: types.Message, state: FSMContext):
     await state.update_data(reminder_text=message.text)
     await state.set_state(ReminderForm.waiting_for_time)
     await message.answer(
-        "📅 Когда напомнить?\n"
-        "Введи дату и время: *ДД.ММ.ГГГГ ЧЧ:ММ*\n"
-        "Например: `25.12.2026 15:30`",
+        "📅 Когда напомнить?\nВведи дату и время: *ДД.ММ.ГГГГ ЧЧ:ММ*\nНапример: `25.12.2026 15:30`",
         parse_mode="Markdown",
         reply_markup=back_to_menu_button()
     )
@@ -182,11 +185,9 @@ async def process_text(message: types.Message, state: FSMContext):
 @dp.message(ReminderForm.waiting_for_time)
 async def process_time(message: types.Message, state: FSMContext):
     time_str = message.text.strip()
-
     if not is_likely_datetime(time_str):
         await message.answer(
-            "❌ Пожалуйста, введи дату и время в формате *ДД.ММ.ГГГГ ЧЧ:ММ*.\n"
-            "Например: `25.12.2026 15:30`",
+            "❌ Пожалуйста, введи дату и время в формате *ДД.ММ.ГГГГ ЧЧ:ММ*.",
             parse_mode="Markdown",
             reply_markup=back_to_menu_button()
         )
@@ -202,8 +203,7 @@ async def process_time(message: types.Message, state: FSMContext):
             return
     except:
         await message.answer(
-            "❌ Неверный формат. Попробуй снова: *ДД.ММ.ГГГГ ЧЧ:ММ*\n"
-            "Например: `25.12.2026 15:30`",
+            "❌ Неверный формат. Попробуй снова: *ДД.ММ.ГГГГ ЧЧ:ММ*",
             parse_mode="Markdown",
             reply_markup=back_to_menu_button()
         )
@@ -221,6 +221,7 @@ async def process_time(message: types.Message, state: FSMContext):
         args=[user_id, reminder_text, rem_id],
         id=f"rem_{rem_id}"
     )
+    logging.info(f"Добавлено напоминание {rem_id} на {remind_at}")
 
     await message.answer(
         f"✅ Запомнил! Напомню {remind_at.strftime('%d.%m.%Y в %H:%M')}:\n«{reminder_text}»",
@@ -228,7 +229,6 @@ async def process_time(message: types.Message, state: FSMContext):
     )
     await state.clear()
 
-# ---------- Просмотр списка (компактный) ----------
 @dp.callback_query(F.data == "list_reminders")
 async def list_reminders(callback: types.CallbackQuery):
     reminders = await get_user_reminders(callback.from_user.id)
@@ -254,7 +254,6 @@ async def list_reminders(callback: types.CallbackQuery):
     )
     await callback.answer()
 
-# ---------- Детальный просмотр и управление ----------
 @dp.callback_query(F.data.startswith("remdetail_"))
 async def reminder_detail(callback: types.CallbackQuery):
     rem_id = int(callback.data.split("_")[1])
@@ -282,7 +281,6 @@ async def reminder_detail(callback: types.CallbackQuery):
     )
     await callback.answer()
 
-# ---------- Удаление ----------
 @dp.callback_query(F.data.startswith("delete_"))
 async def delete_callback(callback: types.CallbackQuery):
     rem_id = int(callback.data.split("_")[1])
@@ -297,7 +295,6 @@ async def delete_callback(callback: types.CallbackQuery):
         await callback.answer("❌ Ошибка", show_alert=True)
     await list_reminders(callback)
 
-# ---------- Изменение времени ----------
 @dp.callback_query(F.data.startswith("edit_"))
 async def edit_callback(callback: types.CallbackQuery, state: FSMContext):
     rem_id = int(callback.data.split("_")[1])
@@ -370,7 +367,6 @@ async def process_edit_time(message: types.Message, state: FSMContext):
     )
     await state.clear()
 
-# ---------- Быстрое создание через текст (только если нет активного состояния) ----------
 @dp.message(StateFilter(None))
 async def handle_any_text(message: types.Message, state: FSMContext):
     await state.update_data(reminder_text=message.text)
@@ -381,12 +377,28 @@ async def handle_any_text(message: types.Message, state: FSMContext):
         reply_markup=back_to_menu_button()
     )
 
+# ---------- Веб-сервер ----------
+async def healthcheck(request):
+    return web.Response(text="OK")
+
+async def run_web_server():
+    app = web.Application()
+    app.router.add_get("/", healthcheck)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    logging.info(f"Web server started on port {PORT}")
+
 # ---------- Запуск ----------
 async def main():
     await init_db()
     await load_scheduled_jobs()
     scheduler.start()
-    await dp.start_polling(bot)
+    await asyncio.gather(
+        dp.start_polling(bot),
+        run_web_server()
+    )
 
 if __name__ == "__main__":
     asyncio.run(main())
