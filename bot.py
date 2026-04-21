@@ -188,11 +188,14 @@ async def process_time(message: types.Message, state: FSMContext):
             return  # остаёмся в состоянии waiting_for_time
     except:
         await message.answer(
-            "❌ Неверный формат. Попробуй снова: ДД.ММ.ГГГГ ЧЧ:ММ",
+            "❌ Неверный формат. Попробуй снова: *ДД.ММ.ГГГГ ЧЧ:ММ*\n"
+            "Например: `25.12.2026 15:30`",
+            parse_mode="Markdown",
             reply_markup=back_to_menu_button()
         )
         return  # остаёмся в состоянии waiting_for_time
 
+    # Если время корректное и будущее
     data = await state.get_data()
     reminder_text = data["reminder_text"]
     user_id = message.from_user.id
@@ -314,7 +317,9 @@ async def process_edit_time(message: types.Message, state: FSMContext):
             return
     except:
         await message.answer(
-            "❌ Неверный формат. Попробуй снова: ДД.ММ.ГГГГ ЧЧ:ММ",
+            "❌ Неверный формат. Попробуй снова: *ДД.ММ.ГГГГ ЧЧ:ММ*\n"
+            "Например: `25.12.2026 15:30`",
+            parse_mode="Markdown",
             reply_markup=back_to_menu_button()
         )
         return
