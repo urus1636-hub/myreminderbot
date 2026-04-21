@@ -181,11 +181,17 @@ async def process_time(message: types.Message, state: FSMContext):
     try:
         remind_at = parser.parse(time_str, dayfirst=True)
         if remind_at < datetime.now():
-            await message.answer("⏳ Это время уже прошло. Введи будущее:")
-            return
+            await message.answer(
+                "⏳ Это время уже прошло. Введи будущее время:",
+                reply_markup=back_to_menu_button()
+            )
+            return  # остаёмся в состоянии waiting_for_time
     except:
-        await message.answer("❌ Неверный формат. Попробуй снова: ДД.ММ.ГГГГ ЧЧ:ММ")
-        return
+        await message.answer(
+            "❌ Неверный формат. Попробуй снова: ДД.ММ.ГГГГ ЧЧ:ММ",
+            reply_markup=back_to_menu_button()
+        )
+        return  # остаёмся в состоянии waiting_for_time
 
     data = await state.get_data()
     reminder_text = data["reminder_text"]
@@ -301,10 +307,16 @@ async def process_edit_time(message: types.Message, state: FSMContext):
     try:
         new_time = parser.parse(time_str, dayfirst=True)
         if new_time < datetime.now():
-            await message.answer("⏳ Это время уже прошло. Введи будущее:")
+            await message.answer(
+                "⏳ Это время уже прошло. Введи будущее:",
+                reply_markup=back_to_menu_button()
+            )
             return
     except:
-        await message.answer("❌ Неверный формат. Попробуй снова: ДД.ММ.ГГГГ ЧЧ:ММ")
+        await message.answer(
+            "❌ Неверный формат. Попробуй снова: ДД.ММ.ГГГГ ЧЧ:ММ",
+            reply_markup=back_to_menu_button()
+        )
         return
 
     data = await state.get_data()
