@@ -4,6 +4,7 @@ import os
 import random
 import time
 import hashlib
+import secrets
 from datetime import datetime
 
 import aiohttp
@@ -80,7 +81,8 @@ async def init_db():
                 taken_slots INTEGER DEFAULT 0,
                 status TEXT DEFAULT 'active',
                 winner_id INTEGER,
-                random_seed TEXT,
+                secret_seed TEXT,
+                public_hash TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -114,14 +116,16 @@ async def save_user(user_id: int, username: str = None, first_name: str = None):
         )
         await db.commit()
 
-async def create_lottery(prize_name: str, slot_price: int, total_slots: int) -> int:
+async def create_lottery(prize_name: str, slot_price: int, total_slots: int) -> tuple[int, str, str]:
+    secret_seed = secrets.token_hex(16)
+    public_hash = hashlib.sha256(secret_seed.encode()).hexdigest()
     async with aiosqlite.connect(DATABASE) as db:
         cursor = await db.execute(
-            "INSERT INTO lotteries (prize_name, slot_price, total_slots) VALUES (?, ?, ?)",
-            (prize_name, slot_price, total_slots)
+            "INSERT INTO lotteries (prize_name, slot_price, total_slots, secret_seed, public_hash) VALUES (?, ?, ?, ?, ?)",
+            (prize_name, slot_price, total_slots, secret_seed, public_hash)
         )
         await db.commit()
-        return cursor.lastrowid
+        return cursor.lastrowid, secret_seed, public_hash
 
 async def get_active_lotteries():
     async with aiosqlite.connect(DATABASE) as db:
@@ -133,7 +137,7 @@ async def get_active_lotteries():
 async def get_lottery(lottery_id: int):
     async with aiosqlite.connect(DATABASE) as db:
         cursor = await db.execute(
-            "SELECT id, prize_name, slot_price, total_slots, taken_slots, status, winner_id FROM lotteries WHERE id = ?",
+            "SELECT id, prize_name, slot_price, total_slots, taken_slots, status, winner_id, secret_seed, public_hash FROM lotteries WHERE id = ?",
             (lottery_id,)
         )
         return await cursor.fetchone()
@@ -204,6 +208,8 @@ async def check_lottery_full(lottery_id: int) -> bool:
     return lottery[4] >= lottery[3]
 
 async def pick_winner(lottery_id: int) -> tuple:
+    lottery = await get_lottery(lottery_id)
+    secret_seed = lottery[7]
     async with aiosqlite.connect(DATABASE) as db:
         cursor = await db.execute(
             "SELECT user_id, username FROM slots WHERE lottery_id = ? AND paid = 1",
@@ -211,16 +217,16 @@ async def pick_winner(lottery_id: int) -> tuple:
         )
         slots = await cursor.fetchall()
         if not slots:
-            return None, None
+            return None, None, None
+        # Используем секретный seed для воспроизводимой случайности
+        random.seed(secret_seed)
         winner = random.choice(slots)
-        # Генерируем "честный" seed для проверки
-        seed = hashlib.md5(f"{lottery_id}_{datetime.now().timestamp()}".encode()).hexdigest()[:8]
         await db.execute(
-            "UPDATE lotteries SET status = 'finished', winner_id = ?, random_seed = ? WHERE id = ?",
-            (winner[0], seed, lottery_id)
+            "UPDATE lotteries SET status = 'finished', winner_id = ? WHERE id = ?",
+            (winner[0], lottery_id)
         )
         await db.commit()
-        return winner[0], winner[1], seed
+        return winner[0], winner[1], secret_seed
 
 async def get_slot_info(slot_id: int):
     async with aiosqlite.connect(DATABASE) as db:
@@ -238,10 +244,6 @@ async def notify_admin(text: str, reply_markup: InlineKeyboardMarkup = None):
             await bot.send_message(admin_id, text, parse_mode="HTML", reply_markup=reply_markup)
         except Exception as e:
             logging.error(f"Ошибка отправки админу {admin_id}: {e}")
-
-def generate_fairness_link(lottery_id: int, seed: str) -> str:
-    # Ссылка на публичную страницу проверки (можно сделать свою, но для примера random.org)
-    return f"https://www.random.org/analysis/?rand=lottery_{lottery_id}_{seed}"
 
 # ---------- Команды ----------
 @dp.message(Command("start"))
@@ -282,8 +284,7 @@ async def show_help(callback: types.CallbackQuery):
         "4️⃣ Нажми «Я оплатил» — админ проверит и подтвердит.\n"
         "5️⃣ Когда все слоты заняты, бот случайно выберет победителя.\n\n"
         "🎁 Победитель получает приз!\n\n"
-        "🔒 *Честность:* всё прозрачно, победитель выбирается автоматически.\n"
-        "⚠️ *Важно:* только один слот в одни руки!"
+        "🔒 *Честность:* бот заранее публикует хеш секретного ключа. После розыгрыша ключ раскрывается, и любой может проверить результат."
     )
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu"))
@@ -342,14 +343,15 @@ async def admin_slots(message: types.Message, state: FSMContext):
     prize_name = data["prize_name"]
     slot_price = data["slot_price"]
 
-    lottery_id = await create_lottery(prize_name, slot_price, slots)
+    lottery_id, secret_seed, public_hash = await create_lottery(prize_name, slot_price, slots)
 
     await message.answer(
         f"✅ Лотерея создана!\n\n"
         f"🎁 Приз: {prize_name}\n"
         f"💰 Цена слота: {slot_price} ₽\n"
         f"🎰 Слотов: {slots}\n\n"
-        f"ID лотереи: {lottery_id}",
+        f"🔒 <b>Хеш для проверки честности:</b> <code>{public_hash}</code>",
+        parse_mode="HTML",
         reply_markup=admin_menu_keyboard()
     )
     await state.clear()
@@ -428,7 +430,7 @@ async def view_lottery(callback: types.CallbackQuery):
         await callback.answer()
         return
 
-    lid, prize, price, total, taken, status, winner_id = lottery
+    lid, prize, price, total, taken, status, winner_id, secret_seed, public_hash = lottery
     slots = await get_lottery_slots(lottery_id)
 
     text = f"🎁 *{prize}*\n\n💰 Цена слота: {price} ₽\n🎰 Слотов: {taken}/{total}\n\n"
@@ -544,15 +546,17 @@ async def approve_payment(callback: types.CallbackQuery):
             pass
 
         if await check_lottery_full(lottery_id):
-            winner_id, winner_username, seed = await pick_winner(lottery_id)
+            winner_id, winner_username, secret_seed = await pick_winner(lottery_id)
             if winner_id:
                 lottery = await get_lottery(lottery_id)
-                fairness_link = generate_fairness_link(lottery_id, seed)
-
+                public_hash = lottery[8]
                 # Собираем всех участников для отчёта
                 slots = await get_lottery_slots(lottery_id)
                 participants_text = "\n".join([f"Слот #{snum}: @{uname or uid}" for snum, uid, uname in slots])
                 winner_display = f"@{winner_username}" if winner_username else f"ID: {winner_id}"
+
+                # Формируем проверочный код для самостоятельной верификации
+                verification_code = f"echo -n '{secret_seed}' | sha256sum"
 
                 # Отправляем всем участникам результаты
                 async with aiosqlite.connect(DATABASE) as db:
@@ -566,7 +570,9 @@ async def approve_payment(callback: types.CallbackQuery):
                             f"🎉 Лотерея «{lottery[1]}» завершена!\n\n"
                             f"🏆 Победитель: {winner_display}\n"
                             f"🎁 Приз: {lottery[1]}\n\n"
-                            f"📋 <a href='{fairness_link}'>Проверить честность</a>",
+                            f"🔑 <b>Секретный ключ:</b> <code>{secret_seed}</code>\n"
+                            f"🔒 <b>Хеш (опубликован ранее):</b> <code>{public_hash}</code>\n\n"
+                            f"🧪 <i>Проверь честность:</i>\n<code>{verification_code}</code>",
                             parse_mode="HTML"
                         )
                     except:
@@ -577,8 +583,8 @@ async def approve_payment(callback: types.CallbackQuery):
                     f"🏆 <b>Лотерея «{prize_name}» завершена!</b>\n\n"
                     f"<b>Участники:</b>\n{participants_text}\n\n"
                     f"<b>Победитель:</b> {winner_display}\n"
-                    f"<b>Seed рандома:</b> {seed}\n"
-                    f"<b>Проверка честности:</b> {fairness_link}"
+                    f"<b>Секретный ключ:</b> {secret_seed}\n"
+                    f"<b>Публичный хеш:</b> {public_hash}"
                 )
                 await notify_admin(admin_report)
 
