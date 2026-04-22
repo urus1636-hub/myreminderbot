@@ -735,6 +735,4 @@ async def take_slot(callback: types.CallbackQuery):
     builder.row(InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"confirm_payment_{slot_id}"))
     builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data=f"view_lottery_{lottery_id}"))
 
-    await callback.message.edit_text(
-        f"🎲 Ты занимаешь слот #{slot_number} в лотерее «{lottery[1]}».\n\n"
-        f"
+    await callback.message.edit
