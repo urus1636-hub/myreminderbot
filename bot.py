@@ -19,7 +19,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiohttp import web
 
 # ========== НАСТРОЙКИ ==========
-BOT_TOKEN = "8568815241:AAEr4IZhui7EUJO-F54-bx_Pb-W_ufU0WDM"
+BOT_TOKEN = "8568815241:AAFnvDf6lo6biwG6tHbG3Sy5iNQwFmU8hcg"
 YOOMONEY_WALLET = "4100119518943796"
 ADMIN_IDS = [1820245156]
 COMMISSION_PERCENT = 20
