@@ -19,7 +19,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dateutil import parser
 
 # ========== НАСТРОЙКИ ==========
-BOT_TOKEN = "8651845065:AAHOi3NvhT0YrgHzomFO1TTwgquZ3tPykrU"  # Твой токен
+BOT_TOKEN = "8651845065:AAHOi3NvhT0YrgHzomFO1TTwgquZ3tPykrU"  # <-- ВСТАВЬ СВОЙ ТОКЕН
 DATABASE = "reminders.db"
 PORT = 8000
 
@@ -170,6 +170,19 @@ async def send_reminder(user_id: int, text: str, reminder_id: int, from_user_id:
 def is_likely_datetime(text: str) -> bool:
     return bool(re.search(r'\d', text)) and bool(re.search(r'[.\-:/]', text))
 
+# ---------- Получение ID по username ----------
+async def get_user_id_by_username(username: str) -> int | None:
+    """Возвращает ID пользователя по username, если бот его знает."""
+    try:
+        # Пытаемся отправить сообщение — если пользователь писал боту, API вернёт его ID в ответе
+        # Но есть нюанс: send_message с username работает только если пользователь писал боту.
+        # Альтернатива — использовать getChat, но он тоже требует, чтобы бот «знал» пользователя.
+        chat = await bot.get_chat(f"@{username}")
+        return chat.id
+    except Exception as e:
+        logging.warning(f"Не удалось получить ID для @{username}: {e}")
+        return None
+
 # ---------- Админ-команды ----------
 @dp.message(Command("admin"))
 async def cmd_admin(message: types.Message):
@@ -204,29 +217,32 @@ async def cmd_stats(message: types.Message):
 async def delegate_start(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(ReminderForm.delegate_target)
     await callback.message.edit_text(
-        "👤 Введите **числовой ID** пользователя, которому хотите отправить напоминание.\n"
-        "Чтобы узнать свой ID, отправьте боту команду /id",
-        parse_mode="Markdown",
+        "👤 Введите @username пользователя, которому хотите отправить напоминание:",
         reply_markup=back_to_menu_button()
     )
     await callback.answer()
 
-@dp.message(Command("id"))
-async def cmd_id(message: types.Message):
-    await message.answer(f"Твой ID: <code>{message.from_user.id}</code>", parse_mode="HTML")
-
 @dp.message(ReminderForm.delegate_target)
 async def delegate_target(message: types.Message, state: FSMContext):
     target = message.text.strip()
-    if not target.isdigit():
-        await message.answer("❌ Пожалуйста, введите **числовой ID**. Узнать его можно командой /id")
+    if not target.startswith("@"):
+        await message.answer("❌ Пожалуйста, введите @username (например, @durov)")
         return
 
-    target_id = int(target)
-    await state.update_data(target_id=target_id)
+    username = target[1:]
+    target_id = await get_user_id_by_username(username)
+
+    if target_id is None:
+        await message.answer(
+            f"❌ Не удалось найти пользователя @{username}. Возможно, он никогда не писал этому боту.\n"
+            f"Попроси его отправить боту любое сообщение (например, /start), и попробуй снова."
+        )
+        return
+
+    await state.update_data(target_id=target_id, target_username=username)
     await state.set_state(ReminderForm.delegate_text)
     await message.answer(
-        f"📝 Введите текст напоминания для пользователя {target_id}:",
+        f"📝 Введите текст напоминания для @{username}:",
         reply_markup=back_to_menu_button()
     )
 
@@ -260,6 +276,7 @@ async def delegate_time(message: types.Message, state: FSMContext):
     data = await state.get_data()
     reminder_text = data["reminder_text"]
     target_id = data.get("target_id")
+    target_username = data.get("target_username")
     from_user_id = message.from_user.id
     from_username = message.from_user.username
 
@@ -273,7 +290,7 @@ async def delegate_time(message: types.Message, state: FSMContext):
         await bot.send_message(target_id, notify_message)
     except Exception as e:
         logging.error(f"Не удалось отправить уведомление {target_id}: {e}")
-        await message.answer("❌ Не удалось отправить уведомление пользователю. Возможно, он не запускал бота.")
+        await message.answer("❌ Не удалось отправить уведомление пользователю. Возможно, он заблокировал бота.")
         return
 
     # Создаём напоминание
@@ -296,15 +313,14 @@ async def delegate_time(message: types.Message, state: FSMContext):
     await log_to_admin(
         f"🔄 <b>Делегированное напоминание</b>\n"
         f"👤 От: @{from_username} (ID: <code>{from_user_id}</code>)\n"
-        f"🎯 Кому: <code>{target_id}</code>\n"
+        f"🎯 Кому: @{target_username} (ID: <code>{target_id}</code>)\n"
         f"📝 Текст: {reminder_text}\n"
         f"⏰ Напомнить: {remind_at.strftime('%d.%m.%Y %H:%M')}"
     )
 
     await message.answer(
-        f"✅ Напоминание для пользователя <code>{target_id}</code> создано!\n"
+        f"✅ Напоминание для @{target_username} создано!\n"
         f"Получатель уже уведомлён. Само напоминание придёт {remind_at.strftime('%d.%m.%Y в %H:%M')}.",
-        parse_mode="HTML",
         reply_markup=main_menu_keyboard()
     )
     await state.clear()
@@ -317,8 +333,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
         "👋 Привет! Я бот-напоминалка.\n\n"
         "Используй кнопки ниже или команды:\n"
         "/list — мои напоминания\n"
-        "/delete ID — удалить напоминание\n"
-        "/id — узнать свой ID",
+        "/delete ID — удалить напоминание",
         reply_markup=main_menu_keyboard()
     )
 
@@ -333,10 +348,9 @@ async def show_help(callback: types.CallbackQuery):
     text = (
         "📌 *Как пользоваться:*\n\n"
         "• Кнопка «Создать» — напоминание для себя.\n"
-        "• Кнопка «Делегировать» — отправить напоминание другу по его **числовому ID**.\n"
+        "• Кнопка «Делегировать» — отправить напоминание другу по @username.\n"
         "• Кнопка «Мои напоминания» — посмотреть и управлять.\n\n"
         "Команды:\n"
-        "/id — узнать свой ID\n"
         "/list — список напоминаний\n"
         "/delete ID — удалить"
     )
