@@ -12,14 +12,14 @@ from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
+from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from aiohttp import web
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dateutil import parser
 
 # ========== НАСТРОЙКИ ==========
-BOT_TOKEN = "8651845065:AAHOi3NvhT0YrgHzomFO1TTwgquZ3tPykrU"  # <-- ВСТАВЬ СВОЙ ТОКЕН
+BOT_TOKEN = "8651845065:AAEt93aOi1Brrj-ETAZGdEQEs9GrVT8zDEw"  # <-- ВСТАВЬ СВОЙ ТОКЕН
 DATABASE = "reminders.db"
 PORT = 8000
 
@@ -45,7 +45,7 @@ class ReminderForm(StatesGroup):
     waiting_for_text = State()
     waiting_for_time = State()
     editing_time = State()
-    delegate_target = State()
+    delegate_share = State()  # ожидание шаринга контакта
     delegate_text = State()
     delegate_time = State()
 
@@ -72,6 +72,12 @@ def back_to_menu_button() -> InlineKeyboardMarkup:
     builder.row(InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu"))
     return builder.as_markup()
 
+def share_contact_keyboard() -> ReplyKeyboardMarkup:
+    builder = ReplyKeyboardBuilder()
+    builder.row(KeyboardButton(text="👤 Выбрать получателя", request_user=KeyboardButtonRequestUser(request_id=1, user_is_bot=False)))
+    builder.row(KeyboardButton(text="🔙 Отмена"))
+    return builder.as_markup(resize_keyboard=True, one_time_keyboard=True)
+
 def reminder_actions_keyboard(rem_id: int) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(
@@ -84,7 +90,6 @@ def reminder_actions_keyboard(rem_id: int) -> InlineKeyboardMarkup:
 # ---------- База данных ----------
 async def init_db():
     async with aiosqlite.connect(DATABASE) as db:
-        # Таблица пользователей (для запоминания ID по username)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -93,7 +98,6 @@ async def init_db():
                 last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        # Таблица напоминаний
         await db.execute("""
             CREATE TABLE IF NOT EXISTS reminders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -108,23 +112,12 @@ async def init_db():
     logging.info("База данных инициализирована")
 
 async def save_user(user_id: int, username: str = None, first_name: str = None):
-    """Сохраняет или обновляет информацию о пользователе."""
     async with aiosqlite.connect(DATABASE) as db:
         await db.execute(
             "INSERT OR REPLACE INTO users (user_id, username, first_name, last_activity) VALUES (?, ?, ?, ?)",
             (user_id, username, first_name, datetime.now())
         )
         await db.commit()
-
-async def get_user_id_by_username(username: str) -> int | None:
-    """Ищет ID пользователя по username в нашей БД."""
-    async with aiosqlite.connect(DATABASE) as db:
-        cursor = await db.execute(
-            "SELECT user_id FROM users WHERE username = ?",
-            (username,)
-        )
-        row = await cursor.fetchone()
-        return row[0] if row else None
 
 async def add_reminder(user_id: int, text: str, remind_at: datetime, from_user_id: int = None, from_username: str = None) -> int:
     async with aiosqlite.connect(DATABASE) as db:
@@ -228,38 +221,31 @@ async def cmd_stats(message: types.Message):
             text += f"• <code>{user_id}</code> — {rem_text[:20]}... — {dt.strftime('%d.%m %H:%M')}{via}\n"
     await message.answer(text, parse_mode="HTML")
 
-# ---------- Делегирование ----------
+# ---------- Делегирование через кнопку «Поделиться» ----------
 @dp.callback_query(F.data == "delegate_reminder")
 async def delegate_start(callback: types.CallbackQuery, state: FSMContext):
-    await state.set_state(ReminderForm.delegate_target)
-    await callback.message.edit_text(
-        "👤 Введите @username пользователя, которому хотите отправить напоминание:",
-        reply_markup=back_to_menu_button()
+    await state.set_state(ReminderForm.delegate_share)
+    await callback.message.answer(
+        "👤 Нажмите кнопку ниже и выберите получателя:",
+        reply_markup=share_contact_keyboard()
     )
     await callback.answer()
 
-@dp.message(ReminderForm.delegate_target)
-async def delegate_target(message: types.Message, state: FSMContext):
-    target = message.text.strip()
-    if not target.startswith("@"):
-        await message.answer("❌ Пожалуйста, введите @username (например, @durov)")
-        return
+@dp.message(ReminderForm.delegate_share, F.text == "🔙 Отмена")
+async def delegate_cancel(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("❌ Делегирование отменено.", reply_markup=types.ReplyKeyboardRemove())
+    await message.answer("Главное меню:", reply_markup=main_menu_keyboard())
 
-    username = target[1:]
-    target_id = await get_user_id_by_username(username)
-
-    if target_id is None:
-        await message.answer(
-            f"❌ Пользователь @{username} не найден в моей базе.\n"
-            f"Попроси его запустить бота (отправить /start), и повтори попытку."
-        )
-        return
-
-    await state.update_data(target_id=target_id, target_username=username)
+@dp.message(ReminderForm.delegate_share, F.user_shared)
+async def delegate_user_shared(message: types.Message, state: FSMContext):
+    user_shared = message.user_shared
+    target_id = user_shared.user_id
+    await state.update_data(target_id=target_id)
     await state.set_state(ReminderForm.delegate_text)
     await message.answer(
-        f"📝 Введите текст напоминания для @{username}:",
-        reply_markup=back_to_menu_button()
+        f"📝 Введите текст напоминания:",
+        reply_markup=types.ReplyKeyboardRemove()
     )
 
 @dp.message(ReminderForm.delegate_text)
@@ -292,7 +278,6 @@ async def delegate_time(message: types.Message, state: FSMContext):
     data = await state.get_data()
     reminder_text = data["reminder_text"]
     target_id = data.get("target_id")
-    target_username = data.get("target_username")
     from_user_id = message.from_user.id
     from_username = message.from_user.username
 
@@ -329,13 +314,13 @@ async def delegate_time(message: types.Message, state: FSMContext):
     await log_to_admin(
         f"🔄 <b>Делегированное напоминание</b>\n"
         f"👤 От: @{from_username} (ID: <code>{from_user_id}</code>)\n"
-        f"🎯 Кому: @{target_username} (ID: <code>{target_id}</code>)\n"
+        f"🎯 Кому: ID: <code>{target_id}</code>\n"
         f"📝 Текст: {reminder_text}\n"
         f"⏰ Напомнить: {remind_at.strftime('%d.%m.%Y %H:%M')}"
     )
 
     await message.answer(
-        f"✅ Напоминание для @{target_username} создано!\n"
+        f"✅ Напоминание создано!\n"
         f"Получатель уже уведомлён. Само напоминание придёт {remind_at.strftime('%d.%m.%Y в %H:%M')}.",
         reply_markup=main_menu_keyboard()
     )
@@ -345,15 +330,19 @@ async def delegate_time(message: types.Message, state: FSMContext):
 @dp.message(Command("start", "menu"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
-    # Сохраняем пользователя в БД при старте
     await save_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
     await message.answer(
         "👋 Привет! Я бот-напоминалка.\n\n"
         "Используй кнопки ниже или команды:\n"
         "/list — мои напоминания\n"
-        "/delete ID — удалить напоминание",
+        "/delete ID — удалить напоминание\n"
+        "/myid — узнать свой ID",
         reply_markup=main_menu_keyboard()
     )
+
+@dp.message(Command("myid"))
+async def cmd_myid(message: types.Message):
+    await message.answer(f"Твой ID: <code>{message.from_user.id}</code>", parse_mode="HTML")
 
 @dp.callback_query(F.data == "main_menu")
 async def show_main_menu(callback: types.CallbackQuery, state: FSMContext):
@@ -367,9 +356,10 @@ async def show_help(callback: types.CallbackQuery, state: FSMContext):
     text = (
         "📌 *Как пользоваться:*\n\n"
         "• Кнопка «Создать» — напоминание для себя.\n"
-        "• Кнопка «Делегировать» — отправить напоминание другу по @username.\n"
+        "• Кнопка «Делегировать» — отправить напоминание другу (выбрать из контактов).\n"
         "• Кнопка «Мои напоминания» — посмотреть и управлять.\n\n"
         "Команды:\n"
+        "/myid — узнать свой ID\n"
         "/list — список напоминаний\n"
         "/delete ID — удалить"
     )
