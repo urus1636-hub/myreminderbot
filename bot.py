@@ -710,4 +710,170 @@ async def delegate_repeat(callback: types.CallbackQuery, state: FSMContext):
 
     await callback.message.edit_text(
         f"✅ Напоминание создано!\n"
-        f"Пол
+        f"Получатель уже уведомлён. Само напоминание придёт {remind_at.strftime('%d.%m.%Y в %H:%M')}.\n"
+        f"🔄 Повтор: {repeat_str if repeat_type != 'none' else 'нет'}",
+        reply_markup=main_menu_keyboard()
+    )
+    await state.clear()
+    await callback.answer()
+
+# ---------- Просмотр и управление ----------
+@dp.callback_query(F.data == "list_reminders")
+async def list_reminders(callback: types.CallbackQuery):
+    reminders = await get_user_reminders(callback.from_user.id)
+    if not reminders:
+        await callback.message.edit_text(
+            "У тебя пока нет активных напоминаний.",
+            reply_markup=back_to_menu_button()
+        )
+        await callback.answer()
+        return
+
+    builder = InlineKeyboardBuilder()
+    for rem_id, rem_text, remind_at, repeat_type, from_user_id, from_username in reminders:
+        dt = datetime.fromisoformat(remind_at)
+        via = f" (от @{from_username})" if from_username else ""
+        rep = f" [{repeat_type}]" if repeat_type else ""
+        label = f"{rem_text[:30]}{'…' if len(rem_text)>30 else ''} — {dt.strftime('%d.%m %H:%M')}{rep}{via}"
+        builder.row(InlineKeyboardButton(text=label, callback_data=f"detail_{rem_id}"))
+    builder.row(InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu"))
+
+    await callback.message.edit_text(
+        "📋 *Твои напоминания:*\n\nВыбери одно, чтобы управлять.",
+        parse_mode="Markdown",
+        reply_markup=builder.as_markup()
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("detail_"))
+async def reminder_detail(callback: types.CallbackQuery):
+    rem_id = int(callback.data.split("_")[1])
+    reminder = await get_reminder(rem_id, callback.from_user.id)
+    if not reminder:
+        await callback.message.edit_text("❌ Напоминание не найдено.", reply_markup=back_to_menu_button())
+        await callback.answer()
+        return
+
+    _, text, remind_at_str, repeat_type, from_user_id, from_username = reminder
+    dt = datetime.fromisoformat(remind_at_str)
+    via = f"\n👤 От: @{from_username}" if from_username else ""
+    rep = f"\n🔄 Повтор: {repeat_type}" if repeat_type else ""
+
+    await callback.message.edit_text(
+        f"📌 *Напоминание*\n\n📝 {text}\n⏰ {dt.strftime('%d.%m.%Y в %H:%M')}{rep}{via}",
+        parse_mode="Markdown",
+        reply_markup=reminder_actions_keyboard(rem_id)
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("delete_"))
+async def delete_callback(callback: types.CallbackQuery):
+    rem_id = int(callback.data.split("_")[1])
+    deleted = await delete_reminder(rem_id, callback.from_user.id)
+    if deleted:
+        try:
+            scheduler.remove_job(f"rem_{rem_id}")
+        except:
+            pass
+        await callback.answer("✅ Удалено", show_alert=False)
+    else:
+        await callback.answer("❌ Ошибка", show_alert=True)
+    await list_reminders(callback)
+
+@dp.callback_query(F.data.startswith("edit_"))
+async def edit_callback(callback: types.CallbackQuery, state: FSMContext):
+    rem_id = int(callback.data.split("_")[1])
+    reminder = await get_reminder(rem_id, callback.from_user.id)
+    if not reminder:
+        await callback.message.edit_text("❌ Напоминание не найдено.", reply_markup=back_to_menu_button())
+        await callback.answer()
+        return
+
+    await state.update_data(edit_id=rem_id, old_text=reminder[1])
+    await state.set_state(ReminderForm.editing_time)
+    await callback.message.edit_text(
+        f"Текущее: «{reminder[1]}» на {datetime.fromisoformat(reminder[2]).strftime('%d.%m.%Y %H:%M')}\n\n"
+        f"Введи *новое время*: ДД.ММ.ГГГГ ЧЧ:ММ",
+        parse_mode="Markdown",
+        reply_markup=back_to_menu_button()
+    )
+    await callback.answer()
+
+@dp.message(ReminderForm.editing_time)
+async def process_edit_time(message: types.Message, state: FSMContext):
+    time_str = message.text.strip()
+    if not is_likely_datetime(time_str):
+        await message.answer("❌ Пожалуйста, введи дату и время в формате *ДД.ММ.ГГГГ ЧЧ:ММ*.", parse_mode="Markdown", reply_markup=back_to_menu_button())
+        return
+    try:
+        new_time = parser.parse(time_str, dayfirst=True)
+        if new_time < datetime.now():
+            await message.answer("⏳ Это время уже прошло. Введи будущее:", reply_markup=back_to_menu_button())
+            return
+    except:
+        await message.answer("❌ Неверный формат. Попробуй снова: *ДД.ММ.ГГГГ ЧЧ:ММ*", parse_mode="Markdown", reply_markup=back_to_menu_button())
+        return
+
+    data = await state.get_data()
+    rem_id = data["edit_id"]
+    old_text = data["old_text"]
+    user_id = message.from_user.id
+
+    # Удаляем старую задачу
+    try:
+        scheduler.remove_job(f"rem_{rem_id}")
+    except:
+        pass
+
+    # Получаем старый repeat_type
+    old_reminder = await get_reminder(rem_id, user_id)
+    repeat_type = old_reminder[3] if old_reminder else None
+
+    await delete_reminder(rem_id, user_id)
+    new_id = await add_reminder(user_id, old_text, new_time, repeat_type)
+
+    if repeat_type:
+        await schedule_repeat_reminder(new_id, user_id, old_text, new_time, repeat_type)
+    else:
+        scheduler.add_job(send_reminder, trigger="date", run_date=new_time, args=[user_id, old_text, new_id, None], id=f"rem_{new_id}")
+
+    await message.answer(
+        f"✅ Время обновлено! Новое напоминание в {new_time.strftime('%d.%m.%Y %H:%M')}",
+        reply_markup=main_menu_keyboard()
+    )
+    await state.clear()
+
+# ---------- Веб-сервер и самопинг ----------
+async def healthcheck(request):
+    return web.Response(text="OK")
+
+async def run_web_server():
+    app = web.Application()
+    app.router.add_get("/", healthcheck)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    logging.info(f"Web server started on port {PORT}")
+
+async def self_ping(port: int):
+    await asyncio.sleep(30)
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"http://0.0.0.0:{port}/") as resp:
+                    logging.info(f"Self-ping: {resp.status}")
+        except Exception as e:
+            logging.warning(f"Self-ping failed: {e}")
+        await asyncio.sleep(300)
+
+# ---------- Запуск ----------
+async def main():
+    await init_db()
+    await load_scheduled_jobs()
+    scheduler.start()
+    asyncio.create_task(self_ping(PORT))
+    await asyncio.gather(dp.start_polling(bot), run_web_server())
+
+if __name__ == "__main__":
+    asyncio.run(main())
