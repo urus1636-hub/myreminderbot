@@ -3,7 +3,6 @@ import logging
 import os
 import random
 import time
-import urllib.parse
 from datetime import datetime
 
 import aiohttp
@@ -147,6 +146,15 @@ async def get_lottery_slots(lottery_id: int):
         )
         return await cursor.fetchall()
 
+async def user_has_slot_in_lottery(lottery_id: int, user_id: int) -> bool:
+    async with aiosqlite.connect(DATABASE) as db:
+        cursor = await db.execute(
+            "SELECT id FROM slots WHERE lottery_id = ? AND user_id = ?",
+            (lottery_id, user_id)
+        )
+        row = await cursor.fetchone()
+        return row is not None
+
 async def add_slot(lottery_id: int, user_id: int, username: str, slot_number: int) -> int:
     async with aiosqlite.connect(DATABASE) as db:
         cursor = await db.execute(
@@ -268,7 +276,8 @@ async def show_help(callback: types.CallbackQuery):
         "4️⃣ Нажми «Я оплатил» — админ проверит и подтвердит.\n"
         "5️⃣ Когда все слоты заняты, бот случайно выберет победителя.\n\n"
         "🎁 Победитель получает приз!\n\n"
-        "🔒 *Честность:* всё прозрачно, победитель выбирается автоматически."
+        "🔒 *Честность:* всё прозрачно, победитель выбирается автоматически.\n"
+        "⚠️ *Важно:* только один слот в одни руки!"
     )
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu"))
@@ -447,19 +456,23 @@ async def take_slot(callback: types.CallbackQuery):
         await callback.answer("❌ Все слоты заняты", show_alert=True)
         return
 
+    user_id = callback.from_user.id
+    username = callback.from_user.username
+
+    # Защита от повторной покупки
+    if await user_has_slot_in_lottery(lottery_id, user_id):
+        await callback.answer("❌ Ты уже занял слот в этой лотерее!", show_alert=True)
+        return
+
     slot_number = await get_free_slot_number(lottery_id)
     if slot_number is None:
         await callback.answer("❌ Нет свободных слотов", show_alert=True)
         return
 
-    user_id = callback.from_user.id
-    username = callback.from_user.username
-
     slot_id = await add_slot(lottery_id, user_id, username, slot_number)
 
     amount = lottery[2]
-    description = urllib.parse.quote(f"Слот {slot_number} в лотерее {lottery[1]}")
-    payment_link = f"https://yoomoney.ru/quickpay/confirm.xml?receiver={YOOMONEY_WALLET}&quickpay-form=shop&targets={description}&paymentType=AC&sum={amount}&label=slot_{slot_id}"
+    payment_link = f"https://yoomoney.ru/transfer/quickpay?requestId=slot_{slot_id}&sum={amount}"
 
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="💳 Оплатить слот", url=payment_link))
@@ -469,7 +482,7 @@ async def take_slot(callback: types.CallbackQuery):
     await callback.message.edit_text(
         f"🎲 Ты занимаешь слот #{slot_number} в лотерее «{lottery[1]}».\n\n"
         f"💰 Сумма к оплате: {amount} ₽\n\n"
-        f"👇 Нажми кнопку ниже, чтобы оплатить, затем вернись и нажми «Я оплатил».\n"
+        f"👇 Нажми кнопку ниже, чтобы оплатить. После оплаты нажми «Я оплатил».\n"
         f"⏳ Админ проверит оплату и подтвердит слот.",
         reply_markup=builder.as_markup()
     )
