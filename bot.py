@@ -3,7 +3,7 @@ import logging
 import os
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, date
 
 import aiohttp
 import aiosqlite
@@ -51,6 +51,8 @@ class ReminderForm(StatesGroup):
     delegate_text = State()
     delegate_time = State()
     delegate_repeat = State()
+    countdown_name = State()
+    countdown_date = State()
 
 async def log_to_admin(text: str):
     try:
@@ -66,8 +68,9 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     )
     builder.row(
         InlineKeyboardButton(text="👥 Делегировать", callback_data="delegate_reminder"),
-        InlineKeyboardButton(text="❓ Помощь", callback_data="help")
+        InlineKeyboardButton(text="📅 Обратный отсчёт", callback_data="countdown_start")
     )
+    builder.row(InlineKeyboardButton(text="❓ Помощь", callback_data="help"))
     return builder.as_markup()
 
 def back_to_menu_button() -> InlineKeyboardMarkup:
@@ -125,6 +128,14 @@ async def init_db():
                 from_username TEXT DEFAULT NULL
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS countdowns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                target_date DATE NOT NULL
+            )
+        """)
         await db.commit()
     logging.info("База данных инициализирована")
 
@@ -170,6 +181,32 @@ async def get_reminder(reminder_id: int, user_id: int):
         )
         return await cursor.fetchone()
 
+async def add_countdown(user_id: int, name: str, target_date: date) -> int:
+    async with aiosqlite.connect(DATABASE) as db:
+        cursor = await db.execute(
+            "INSERT INTO countdowns (user_id, name, target_date) VALUES (?, ?, ?)",
+            (user_id, name, target_date)
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+async def get_user_countdowns(user_id: int):
+    async with aiosqlite.connect(DATABASE) as db:
+        cursor = await db.execute(
+            "SELECT id, name, target_date FROM countdowns WHERE user_id = ? ORDER BY target_date",
+            (user_id,)
+        )
+        return await cursor.fetchall()
+
+async def delete_countdown(countdown_id: int, user_id: int) -> bool:
+    async with aiosqlite.connect(DATABASE) as db:
+        cursor = await db.execute(
+            "DELETE FROM countdowns WHERE id = ? AND user_id = ?",
+            (countdown_id, user_id)
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
 async def load_scheduled_jobs():
     async with aiosqlite.connect(DATABASE) as db:
         cursor = await db.execute("SELECT id, user_id, text, remind_at, repeat_type, from_user_id, from_username FROM reminders")
@@ -189,6 +226,13 @@ async def load_scheduled_jobs():
                 )
             else:
                 await delete_reminder(rem_id, user_id)
+
+        # Загружаем обратные отсчёты
+        cursor = await db.execute("SELECT id, user_id, name, target_date FROM countdowns")
+        countdowns = await cursor.fetchall()
+        for cd_id, user_id, name, target_str in countdowns:
+            target_date = datetime.strptime(target_str, "%Y-%m-%d").date()
+            await schedule_countdown_reminder(cd_id, user_id, name, target_date)
 
 async def schedule_repeat_reminder(rem_id: int, user_id: int, text: str, remind_at: datetime, repeat_type: str, from_user_id: int = None, from_username: str = None):
     if repeat_type == "hour":
@@ -214,6 +258,51 @@ async def schedule_repeat_reminder(rem_id: int, user_id: int, text: str, remind_
         )
     logging.info(f"Запланировано повторяющееся напоминание {rem_id} (тип: {repeat_type})")
 
+async def schedule_countdown_reminder(cd_id: int, user_id: int, name: str, target_date: date):
+    """Планирует ежедневное уведомление в 9:00."""
+    scheduler.add_job(
+        send_countdown_update,
+        trigger=CronTrigger(hour=9, minute=0),
+        args=[cd_id, user_id, name, target_date],
+        id=f"cd_{cd_id}"
+    )
+    logging.info(f"Запланирован обратный отсчёт {cd_id} для {user_id}")
+
+async def send_countdown_update(cd_id: int, user_id: int, name: str, target_date: date):
+    """Отправляет уведомление об обратном отсчёте."""
+    today = date.today()
+    days_left = (target_date - today).days
+
+    if days_left > 0:
+        message = f"📅 До события «{name}» осталось {days_left} {get_days_word(days_left)}!"
+    elif days_left == 0:
+        message = f"🎉 Сегодня — «{name}»! Поздравляю!"
+    else:
+        # Дата прошла, удаляем отсчёт
+        await delete_countdown(cd_id, user_id)
+        try:
+            scheduler.remove_job(f"cd_{cd_id}")
+        except:
+            pass
+        return
+
+    try:
+        await bot.send_message(user_id, message)
+        logging.info(f"Отправлен обратный отсчёт {cd_id} для {user_id}")
+    except Exception as e:
+        logging.error(f"Ошибка отправки обратного отсчёта {cd_id}: {e}")
+
+def get_days_word(days: int) -> str:
+    if 11 <= days % 100 <= 19:
+        return "дней"
+    last_digit = days % 10
+    if last_digit == 1:
+        return "день"
+    elif 2 <= last_digit <= 4:
+        return "дня"
+    else:
+        return "дней"
+
 async def send_reminder(user_id: int, text: str, reminder_id: int, repeat_type: str = None, from_user_id: int = None, from_username: str = None):
     logging.info(f"Сработало напоминание {reminder_id} для {user_id}")
     try:
@@ -235,6 +324,13 @@ async def send_reminder(user_id: int, text: str, reminder_id: int, repeat_type: 
 def is_likely_datetime(text: str) -> bool:
     return bool(re.search(r'\d', text)) and bool(re.search(r'[.\-:/]', text))
 
+def is_valid_date(text: str) -> bool:
+    try:
+        parser.parse(text, dayfirst=True)
+        return True
+    except:
+        return False
+
 # ---------- Админ-команды ----------
 @dp.message(Command("admin"))
 async def cmd_admin(message: types.Message):
@@ -253,17 +349,124 @@ async def cmd_stats(message: types.Message):
         users_count = (await cursor.fetchone())[0]
         cursor = await db.execute("SELECT COUNT(*) FROM reminders")
         reminders_count = (await cursor.fetchone())[0]
+        cursor = await db.execute("SELECT COUNT(*) FROM countdowns")
+        countdowns_count = (await cursor.fetchone())[0]
         cursor = await db.execute("SELECT user_id, text, remind_at, repeat_type, from_username FROM reminders ORDER BY id DESC LIMIT 5")
         last_reminders = await cursor.fetchall()
-    text = f"📊 <b>Статистика бота</b>\n\n👥 Пользователей: {users_count}\n⏰ Напоминаний: {reminders_count}\n\n"
+    text = f"📊 <b>Статистика бота</b>\n\n👥 Пользователей: {users_count}\n⏰ Напоминаний: {reminders_count}\n📅 Обратных отсчётов: {countdowns_count}\n\n"
     if last_reminders:
-        text += "📋 <b>Последние:</b>\n"
+        text += "📋 <b>Последние напоминания:</b>\n"
         for user_id, rem_text, remind_at, repeat_type, from_username in last_reminders:
             dt = datetime.fromisoformat(remind_at)
             via = f" (от @{from_username})" if from_username else ""
             rep = f" [{repeat_type}]" if repeat_type else ""
             text += f"• <code>{user_id}</code> — {rem_text[:20]}... — {dt.strftime('%d.%m %H:%M')}{rep}{via}\n"
     await message.answer(text, parse_mode="HTML")
+
+# ---------- Обратный отсчёт ----------
+@dp.callback_query(F.data == "countdown_start")
+async def countdown_start(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(ReminderForm.countdown_name)
+    await callback.message.edit_text(
+        "📅 Введите название события (например, «Лето», «День рождения», «Экзамен»):",
+        reply_markup=back_to_menu_button()
+    )
+    await callback.answer()
+
+@dp.message(ReminderForm.countdown_name)
+async def countdown_name(message: types.Message, state: FSMContext):
+    name = message.text.strip()
+    if len(name) > 50:
+        await message.answer("❌ Слишком длинное название. Давай покороче (до 50 символов).")
+        return
+    await state.update_data(countdown_name=name)
+    await state.set_state(ReminderForm.countdown_date)
+    await message.answer(
+        "📅 Введите дату события в формате *ДД.ММ.ГГГГ*:\nНапример: `06.06.2026`",
+        parse_mode="Markdown",
+        reply_markup=back_to_menu_button()
+    )
+
+@dp.message(ReminderForm.countdown_date)
+async def countdown_date_handler(message: types.Message, state: FSMContext):
+    date_str = message.text.strip()
+    try:
+        target_date = parser.parse(date_str, dayfirst=True).date()
+        if target_date < date.today():
+            await message.answer("⏳ Эта дата уже прошла. Введи будущую дату:")
+            return
+    except:
+        await message.answer("❌ Неверный формат. Введи дату как `ДД.ММ.ГГГГ`.")
+        return
+
+    data = await state.get_data()
+    name = data["countdown_name"]
+    user_id = message.from_user.id
+
+    cd_id = await add_countdown(user_id, name, target_date)
+    await schedule_countdown_reminder(cd_id, user_id, name, target_date)
+
+    days_left = (target_date - date.today()).days
+    await message.answer(
+        f"✅ Обратный отсчёт создан!\n"
+        f"📅 Событие: «{name}»\n"
+        f"⏰ Дата: {target_date.strftime('%d.%m.%Y')}\n"
+        f"📆 Осталось: {days_left} {get_days_word(days_left)}\n\n"
+        f"Я буду напоминать тебе каждый день в 9:00!",
+        reply_markup=main_menu_keyboard()
+    )
+    await state.clear()
+
+@dp.callback_query(F.data == "list_countdowns")
+async def list_countdowns(callback: types.CallbackQuery):
+    countdowns = await get_user_countdowns(callback.from_user.id)
+    if not countdowns:
+        await callback.message.edit_text(
+            "У тебя пока нет активных обратных отсчётов.",
+            reply_markup=back_to_menu_button()
+        )
+        await callback.answer()
+        return
+
+    lines = ["📋 *Твои обратные отсчёты:*\n"]
+    for cd_id, name, target_str in countdowns:
+        target_date = datetime.strptime(target_str, "%Y-%m-%d").date()
+        days_left = (target_date - date.today()).days
+        lines.append(f"🆔 {cd_id} | {name} — {target_date.strftime('%d.%m.%Y')} ({days_left} {get_days_word(days_left)})")
+
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="❌ Удалить отсчёт", callback_data="delete_cd_menu"))
+    builder.row(InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu"))
+
+    await callback.message.edit_text("\n".join(lines), parse_mode="Markdown", reply_markup=builder.as_markup())
+    await callback.answer()
+
+@dp.callback_query(F.data == "delete_cd_menu")
+async def delete_cd_menu(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text(
+        "Введи ID обратного отсчёта, который хочешь удалить (узнать ID можно в списке отсчётов):",
+        reply_markup=back_to_menu_button()
+    )
+    await state.set_state("delete_countdown")
+
+@dp.message(StateFilter("delete_countdown"))
+async def delete_countdown_handler(message: types.Message, state: FSMContext):
+    try:
+        cd_id = int(message.text.strip())
+    except:
+        await message.answer("❌ ID должен быть числом.")
+        return
+
+    deleted = await delete_countdown(cd_id, message.from_user.id)
+    if deleted:
+        try:
+            scheduler.remove_job(f"cd_{cd_id}")
+        except:
+            pass
+        await message.answer(f"✅ Обратный отсчёт {cd_id} удалён.", reply_markup=main_menu_keyboard())
+    else:
+        await message.answer("❌ Отсчёт не найден или не принадлежит тебе.", reply_markup=main_menu_keyboard())
+    await state.clear()
 
 # ---------- Обычные напоминания ----------
 @dp.message(Command("start", "menu"))
@@ -274,6 +477,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
         "👋 Привет! Я бот-напоминалка.\n\n"
         "Используй кнопки ниже или команды:\n"
         "/list — мои напоминания\n"
+        "/cdlist — мои обратные отсчёты\n"
         "/delete ID — удалить напоминание\n"
         "/myid — узнать свой ID",
         reply_markup=main_menu_keyboard()
@@ -296,6 +500,19 @@ async def cmd_list(message: types.Message):
         rep = f" [{repeat_type}]" if repeat_type else ""
         lines.append(f"🆔 {rem_id} | {dt.strftime('%d.%m %H:%M')}{rep} — {rem_text[:30]}{via}")
     await message.answer("📋 *Твои напоминания:*\n" + "\n".join(lines), parse_mode="Markdown")
+
+@dp.message(Command("cdlist"))
+async def cmd_cdlist(message: types.Message):
+    countdowns = await get_user_countdowns(message.from_user.id)
+    if not countdowns:
+        await message.answer("У тебя пока нет активных обратных отсчётов.")
+        return
+    lines = ["📋 *Твои обратные отсчёты:*"]
+    for cd_id, name, target_str in countdowns:
+        target_date = datetime.strptime(target_str, "%Y-%m-%d").date()
+        days_left = (target_date - date.today()).days
+        lines.append(f"🆔 {cd_id} | {name} — {target_date.strftime('%d.%m.%Y')} ({days_left} {get_days_word(days_left)})")
+    await message.answer("\n".join(lines), parse_mode="Markdown")
 
 @dp.message(Command("delete"))
 async def cmd_delete(message: types.Message):
@@ -331,11 +548,13 @@ async def show_help(callback: types.CallbackQuery, state: FSMContext):
         "📌 *Как пользоваться:*\n\n"
         "• Кнопка «Создать» — напоминание для себя.\n"
         "• Кнопка «Делегировать» — отправить напоминание другу.\n"
-        "• Кнопка «Мои напоминания» — посмотреть и управлять.\n\n"
+        "• Кнопка «Мои напоминания» — посмотреть и управлять.\n"
+        "• Кнопка «Обратный отсчёт» — отсчёт дней до важной даты.\n\n"
         "Команды:\n"
         "/myid — узнать свой ID\n"
         "/list — список напоминаний\n"
-        "/delete ID — удалить"
+        "/cdlist — список обратных отсчётов\n"
+        "/delete ID — удалить напоминание"
     )
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu"))
@@ -486,213 +705,4 @@ async def delegate_repeat(callback: types.CallbackQuery, state: FSMContext):
     remind_at = data["remind_at"]
     target_id = data.get("target_id")
     from_user_id = callback.from_user.id
-    from_username = callback.from_user.username
-
-    repeat_str = {"hour": "каждый час", "day": "каждый день", "week": "раз в неделю", "none": "без повтора"}.get(repeat_type, "")
-
-    # Уведомление получателю
-    notify_message = (
-        f"📬 Вам пришло напоминание от @{from_username or from_user_id}:\n"
-        f"📝 «{reminder_text}»\n"
-        f"⏰ Оно сработает {remind_at.strftime('%d.%m.%Y в %H:%M')}\n"
-        f"🔄 Повтор: {repeat_str if repeat_type != 'none' else 'нет'}"
-    )
-    try:
-        await bot.send_message(target_id, notify_message)
-    except Exception as e:
-        logging.error(f"Не удалось отправить уведомление {target_id}: {e}")
-        await callback.message.edit_text("❌ Не удалось отправить уведомление пользователю. Возможно, он заблокировал бота.")
-        await callback.answer()
-        return
-
-    rem_id = await add_reminder(target_id, reminder_text, remind_at, repeat_type if repeat_type != "none" else None, from_user_id, from_username)
-
-    if repeat_type == "none":
-        scheduler.add_job(
-            send_reminder,
-            trigger="date",
-            run_date=remind_at,
-            args=[target_id, reminder_text, rem_id, None, from_user_id, from_username],
-            id=f"rem_{rem_id}"
-        )
-    else:
-        await schedule_repeat_reminder(rem_id, target_id, reminder_text, remind_at, repeat_type, from_user_id, from_username)
-
-    await log_to_admin(
-        f"🔄 <b>Делегированное напоминание</b>\n"
-        f"👤 От: @{from_username} (ID: <code>{from_user_id}</code>)\n"
-        f"🎯 Кому: ID: <code>{target_id}</code>\n"
-        f"📝 Текст: {reminder_text}\n"
-        f"⏰ Напомнить: {remind_at.strftime('%d.%m.%Y %H:%M')}\n"
-        f"🔄 Повтор: {repeat_str if repeat_type != 'none' else 'нет'}"
-    )
-
-    await callback.message.edit_text(
-        f"✅ Напоминание создано!\n"
-        f"Получатель уже уведомлён. Само напоминание придёт {remind_at.strftime('%d.%m.%Y в %H:%M')}.\n"
-        f"🔄 Повтор: {repeat_str if repeat_type != 'none' else 'нет'}",
-        reply_markup=main_menu_keyboard()
-    )
-    await state.clear()
-    await callback.answer()
-
-# ---------- Просмотр и управление ----------
-@dp.callback_query(F.data == "list_reminders")
-async def list_reminders(callback: types.CallbackQuery):
-    reminders = await get_user_reminders(callback.from_user.id)
-    if not reminders:
-        await callback.message.edit_text(
-            "У тебя пока нет активных напоминаний.",
-            reply_markup=back_to_menu_button()
-        )
-        await callback.answer()
-        return
-
-    builder = InlineKeyboardBuilder()
-    for rem_id, rem_text, remind_at, repeat_type, from_user_id, from_username in reminders:
-        dt = datetime.fromisoformat(remind_at)
-        via = f" (от @{from_username})" if from_username else ""
-        rep = f" [{repeat_type}]" if repeat_type else ""
-        label = f"{rem_text[:30]}{'…' if len(rem_text)>30 else ''} — {dt.strftime('%d.%m %H:%M')}{rep}{via}"
-        builder.row(InlineKeyboardButton(text=label, callback_data=f"detail_{rem_id}"))
-    builder.row(InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu"))
-
-    await callback.message.edit_text(
-        "📋 *Твои напоминания:*\n\nВыбери одно, чтобы управлять.",
-        parse_mode="Markdown",
-        reply_markup=builder.as_markup()
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("detail_"))
-async def reminder_detail(callback: types.CallbackQuery):
-    rem_id = int(callback.data.split("_")[1])
-    reminder = await get_reminder(rem_id, callback.from_user.id)
-    if not reminder:
-        await callback.message.edit_text("❌ Напоминание не найдено.", reply_markup=back_to_menu_button())
-        await callback.answer()
-        return
-
-    _, text, remind_at_str, repeat_type, from_user_id, from_username = reminder
-    dt = datetime.fromisoformat(remind_at_str)
-    via = f"\n👤 От: @{from_username}" if from_username else ""
-    rep = f"\n🔄 Повтор: {repeat_type}" if repeat_type else ""
-
-    await callback.message.edit_text(
-        f"📌 *Напоминание*\n\n📝 {text}\n⏰ {dt.strftime('%d.%m.%Y в %H:%M')}{rep}{via}",
-        parse_mode="Markdown",
-        reply_markup=reminder_actions_keyboard(rem_id)
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("delete_"))
-async def delete_callback(callback: types.CallbackQuery):
-    rem_id = int(callback.data.split("_")[1])
-    deleted = await delete_reminder(rem_id, callback.from_user.id)
-    if deleted:
-        try:
-            scheduler.remove_job(f"rem_{rem_id}")
-        except:
-            pass
-        await callback.answer("✅ Удалено", show_alert=False)
-    else:
-        await callback.answer("❌ Ошибка", show_alert=True)
-    await list_reminders(callback)
-
-@dp.callback_query(F.data.startswith("edit_"))
-async def edit_callback(callback: types.CallbackQuery, state: FSMContext):
-    rem_id = int(callback.data.split("_")[1])
-    reminder = await get_reminder(rem_id, callback.from_user.id)
-    if not reminder:
-        await callback.message.edit_text("❌ Напоминание не найдено.", reply_markup=back_to_menu_button())
-        await callback.answer()
-        return
-
-    await state.update_data(edit_id=rem_id, old_text=reminder[1])
-    await state.set_state(ReminderForm.editing_time)
-    await callback.message.edit_text(
-        f"Текущее: «{reminder[1]}» на {datetime.fromisoformat(reminder[2]).strftime('%d.%m.%Y %H:%M')}\n\n"
-        f"Введи *новое время*: ДД.ММ.ГГГГ ЧЧ:ММ",
-        parse_mode="Markdown",
-        reply_markup=back_to_menu_button()
-    )
-    await callback.answer()
-
-@dp.message(ReminderForm.editing_time)
-async def process_edit_time(message: types.Message, state: FSMContext):
-    time_str = message.text.strip()
-    if not is_likely_datetime(time_str):
-        await message.answer("❌ Пожалуйста, введи дату и время в формате *ДД.ММ.ГГГГ ЧЧ:ММ*.", parse_mode="Markdown", reply_markup=back_to_menu_button())
-        return
-    try:
-        new_time = parser.parse(time_str, dayfirst=True)
-        if new_time < datetime.now():
-            await message.answer("⏳ Это время уже прошло. Введи будущее:", reply_markup=back_to_menu_button())
-            return
-    except:
-        await message.answer("❌ Неверный формат. Попробуй снова: *ДД.ММ.ГГГГ ЧЧ:ММ*", parse_mode="Markdown", reply_markup=back_to_menu_button())
-        return
-
-    data = await state.get_data()
-    rem_id = data["edit_id"]
-    old_text = data["old_text"]
-    user_id = message.from_user.id
-
-    # Удаляем старую задачу
-    try:
-        scheduler.remove_job(f"rem_{rem_id}")
-    except:
-        pass
-
-    # Получаем старый repeat_type
-    old_reminder = await get_reminder(rem_id, user_id)
-    repeat_type = old_reminder[3] if old_reminder else None
-
-    await delete_reminder(rem_id, user_id)
-    new_id = await add_reminder(user_id, old_text, new_time, repeat_type)
-
-    if repeat_type:
-        await schedule_repeat_reminder(new_id, user_id, old_text, new_time, repeat_type)
-    else:
-        scheduler.add_job(send_reminder, trigger="date", run_date=new_time, args=[user_id, old_text, new_id, None], id=f"rem_{new_id}")
-
-    await message.answer(
-        f"✅ Время обновлено! Новое напоминание в {new_time.strftime('%d.%m.%Y %H:%M')}",
-        reply_markup=main_menu_keyboard()
-    )
-    await state.clear()
-
-# ---------- Веб-сервер и самопинг ----------
-async def healthcheck(request):
-    return web.Response(text="OK")
-
-async def run_web_server():
-    app = web.Application()
-    app.router.add_get("/", healthcheck)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
-    await site.start()
-    logging.info(f"Web server started on port {PORT}")
-
-async def self_ping(port: int):
-    await asyncio.sleep(30)
-    while True:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(f"http://0.0.0.0:{port}/") as resp:
-                    logging.info(f"Self-ping: {resp.status}")
-        except Exception as e:
-            logging.warning(f"Self-ping failed: {e}")
-        await asyncio.sleep(300)
-
-# ---------- Запуск ----------
-async def main():
-    await init_db()
-    await load_scheduled_jobs()
-    scheduler.start()
-    asyncio.create_task(self_ping(PORT))
-    await asyncio.gather(dp.start_polling(bot), run_web_server())
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    from_username = callback
