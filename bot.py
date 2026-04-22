@@ -23,7 +23,7 @@ BOT_TOKEN = "8568815241:AAEr4IZhui7EUJO-F54-bx_Pb-W_ufU0WDM"
 YOOMONEY_WALLET = "4100119518943796"
 ADMIN_IDS = [1820245156]
 COMMISSION_PERCENT = 20
-REFERRAL_BONUS = 3  # Сколько друзей нужно пригласить для бесплатного слота
+REFERRAL_BONUS = 3
 
 DATA_DIR = "/app/data"
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -461,7 +461,7 @@ async def cmd_ref(message: types.Message):
         f"🔗 *Твоя реферальная ссылка:*\n`{ref_link}`\n\n"
         f"👥 Приглашено друзей: {count}/{REFERRAL_BONUS}\n"
         f"🎁 Бесплатных слотов: {free_slots}\n\n"
-        f"Пригласи ещё {REFERRAL_BONUS - count} друзей и получи бесплатный слот!"
+        f"Пригласи ещё {max(0, REFERRAL_BONUS - count)} друзей и получи бесплатный слот!"
     )
     await message.answer(text, parse_mode="Markdown")
 
