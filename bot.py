@@ -218,7 +218,6 @@ async def pick_winner(lottery_id: int) -> tuple:
         slots = await cursor.fetchall()
         if not slots:
             return None, None, None
-        # Используем секретный seed для воспроизводимой случайности
         random.seed(secret_seed)
         winner = random.choice(slots)
         await db.execute(
@@ -284,7 +283,7 @@ async def show_help(callback: types.CallbackQuery):
         "4️⃣ Нажми «Я оплатил» — админ проверит и подтвердит.\n"
         "5️⃣ Когда все слоты заняты, бот случайно выберет победителя.\n\n"
         "🎁 Победитель получает приз!\n\n"
-        "🔒 *Честность:* бот заранее публикует хеш секретного ключа. После розыгрыша ключ раскрывается, и любой может проверить результат."
+        "🔒 *Честность:* бот заранее публикует хеш. После розыгрыша ты можешь проверить результат на сайте emn178.github.io/online-tools/sha256.html"
     )
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu"))
@@ -550,15 +549,20 @@ async def approve_payment(callback: types.CallbackQuery):
             if winner_id:
                 lottery = await get_lottery(lottery_id)
                 public_hash = lottery[8]
-                # Собираем всех участников для отчёта
                 slots = await get_lottery_slots(lottery_id)
                 participants_text = "\n".join([f"Слот #{snum}: @{uname or uid}" for snum, uid, uname in slots])
                 winner_display = f"@{winner_username}" if winner_username else f"ID: {winner_id}"
 
-                # Формируем проверочный код для самостоятельной верификации
-                verification_code = f"echo -n '{secret_seed}' | sha256sum"
+                # Инструкция для проверки
+                verify_instruction = (
+                    "🔑 <b>Как проверить честность:</b>\n"
+                    "1. Зайди на сайт emn178.github.io/online-tools/sha256.html\n"
+                    "2. В поле «Input» вставь секретный ключ ниже.\n"
+                    "3. Настройки оставь по умолчанию (UTF-8, Hex).\n"
+                    "4. Сравни «Output» с публичным хешем, который был объявлен до розыгрыша."
+                )
 
-                # Отправляем всем участникам результаты
+                # Уведомление для всех участников
                 async with aiosqlite.connect(DATABASE) as db:
                     cursor = await db.execute("SELECT DISTINCT user_id FROM slots WHERE lottery_id = ? AND paid = 1", (lottery_id,))
                     participants = await cursor.fetchall()
@@ -570,15 +574,30 @@ async def approve_payment(callback: types.CallbackQuery):
                             f"🎉 Лотерея «{lottery[1]}» завершена!\n\n"
                             f"🏆 Победитель: {winner_display}\n"
                             f"🎁 Приз: {lottery[1]}\n\n"
-                            f"🔑 <b>Секретный ключ:</b> <code>{secret_seed}</code>\n"
-                            f"🔒 <b>Хеш (опубликован ранее):</b> <code>{public_hash}</code>\n\n"
-                            f"🧪 <i>Проверь честность:</i>\n<code>{verification_code}</code>",
+                            f"{verify_instruction}\n\n"
+                            f"🔒 <b>Публичный хеш:</b> <code>{public_hash}</code>\n"
+                            f"🔑 <b>Секретный ключ:</b> <code>{secret_seed}</code>",
+                            parse_mode="HTML",
+                            reply_markup=main_menu_keyboard()
+                        )
+                    except:
+                        pass
+
+                # Отдельное сообщение победителю
+                if winner_id:
+                    try:
+                        await bot.send_message(
+                            winner_id,
+                            f"🏆 <b>Поздравляю, ты победил в лотерее «{lottery[1]}»!</b>\n\n"
+                            f"🎁 Твой приз: {lottery[1]}\n\n"
+                            f"📩 Чтобы получить приз, напиши админу: @fourwayeu\n"
+                            f"Укажи ID лотереи: {lottery_id}",
                             parse_mode="HTML"
                         )
                     except:
                         pass
 
-                # Отправляем админу полный отчёт
+                # Отчёт админу
                 admin_report = (
                     f"🏆 <b>Лотерея «{prize_name}» завершена!</b>\n\n"
                     f"<b>Участники:</b>\n{participants_text}\n\n"
