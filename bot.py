@@ -3,6 +3,7 @@ import logging
 import os
 import random
 import time
+import urllib.parse
 from datetime import datetime
 
 import aiohttp
@@ -221,23 +222,10 @@ async def get_slot_info(slot_id: int):
         """, (slot_id,))
         return await cursor.fetchone()
 
-# ---------- Генерация ссылки на оплату ЮMoney ----------
-def generate_yoomoney_link(slot_id: int, amount: int, description: str) -> str:
-    label = f"slot_{slot_id}"
-    return (
-        f"https://yoomoney.ru/quickpay/confirm.xml?"
-        f"receiver={YOOMONEY_WALLET}&"
-        f"quickpay-form=shop&"
-        f"targets={description}&"
-        f"paymentType=AC&"
-        f"sum={amount}&"
-        f"label={label}"
-    )
-
-async def notify_admin(text: str):
+async def notify_admin(text: str, reply_markup: InlineKeyboardMarkup = None):
     for admin_id in ADMIN_IDS:
         try:
-            await bot.send_message(admin_id, text, parse_mode="HTML")
+            await bot.send_message(admin_id, text, parse_mode="HTML", reply_markup=reply_markup)
         except Exception as e:
             logging.error(f"Ошибка отправки админу {admin_id}: {e}")
 
@@ -470,8 +458,8 @@ async def take_slot(callback: types.CallbackQuery):
     slot_id = await add_slot(lottery_id, user_id, username, slot_number)
 
     amount = lottery[2]
-    description = f"Слот #{slot_number} в лотерее «{lottery[1]}»"
-    payment_link = generate_yoomoney_link(slot_id, amount, description)
+    description = urllib.parse.quote(f"Слот {slot_number} в лотерее {lottery[1]}")
+    payment_link = f"https://yoomoney.ru/quickpay/confirm.xml?receiver={YOOMONEY_WALLET}&quickpay-form=shop&targets={description}&paymentType=AC&sum={amount}&label=slot_{slot_id}"
 
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="💳 Оплатить слот", url=payment_link))
@@ -491,13 +479,12 @@ async def take_slot(callback: types.CallbackQuery):
 async def confirm_payment(callback: types.CallbackQuery):
     slot_id = int(callback.data.split("_")[2])
 
-    # Отправляем уведомление админу
     slot_info = await get_slot_info(slot_id)
     if slot_info:
         user_id, username, lottery_id, prize_name, amount = slot_info
         user_display = f"@{username}" if username else f"ID: {user_id}"
         admin_text = (
-            f"🔔 *Новая оплата ожидает подтверждения!*\n\n"
+            f"🔔 <b>Новая оплата ожидает подтверждения!</b>\n\n"
             f"👤 Пользователь: {user_display}\n"
             f"🎁 Лотерея: {prize_name}\n"
             f"💰 Сумма: {amount} ₽\n"
@@ -507,7 +494,7 @@ async def confirm_payment(callback: types.CallbackQuery):
         builder = InlineKeyboardBuilder()
         builder.row(InlineKeyboardButton(text="✅ Подтвердить оплату", callback_data=f"approve_payment_{slot_id}"))
         builder.row(InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_payment_{slot_id}"))
-        await notify_admin(admin_text)
+        await notify_admin(admin_text, builder.as_markup())
 
     await callback.message.edit_text(
         "⏳ Запрос на подтверждение оплаты отправлен админу.\n"
@@ -529,7 +516,6 @@ async def approve_payment(callback: types.CallbackQuery):
     if slot_info:
         user_id, username, lottery_id, prize_name, amount = slot_info
 
-        # Уведомляем участника
         try:
             await bot.send_message(
                 user_id,
@@ -539,13 +525,11 @@ async def approve_payment(callback: types.CallbackQuery):
         except:
             pass
 
-        # Проверяем, заполнилась ли лотерея
         if await check_lottery_full(lottery_id):
             winner_id, winner_username = await pick_winner(lottery_id)
             if winner_id:
                 lottery = await get_lottery(lottery_id)
 
-                # Уведомляем всех участников
                 async with aiosqlite.connect(DATABASE) as db:
                     cursor = await db.execute("SELECT DISTINCT user_id FROM slots WHERE lottery_id = ? AND paid = 1", (lottery_id,))
                     participants = await cursor.fetchall()
@@ -579,12 +563,10 @@ async def reject_payment(callback: types.CallbackQuery):
 
     if slot_info:
         user_id, username, lottery_id, prize_name, amount = slot_info
-        # Удаляем слот
         async with aiosqlite.connect(DATABASE) as db:
             await db.execute("DELETE FROM slots WHERE id = ?", (slot_id,))
             await db.commit()
 
-        # Уведомляем участника
         try:
             await bot.send_message(
                 user_id,
@@ -616,7 +598,7 @@ async def my_participations(callback: types.CallbackQuery):
     await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=builder.as_markup())
     await callback.answer()
 
-# ---------- Веб-сервер ----------
+# ---------- Веб-сервер и самопинг ----------
 async def healthcheck(request):
     return web.Response(text="OK")
 
@@ -629,7 +611,6 @@ async def run_web_server():
     await site.start()
     logging.info(f"Web server started on port {PORT}")
 
-# ---------- Самопинг ----------
 async def self_ping(port: int):
     await asyncio.sleep(30)
     while True:
