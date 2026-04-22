@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import re
+import time
 from datetime import datetime
 
 import aiohttp
@@ -22,6 +23,13 @@ BOT_TOKEN = "8651845065:AAFYzociP_Wojmwg4MnWOn3JXunzTC-2PdM"  # <-- ВСТАВЬ
 DATABASE = "reminders.db"
 PORT = 8000
 # ================================
+
+# Устанавливаем московское время
+os.environ['TZ'] = 'Europe/Moscow'
+try:
+    time.tzset()
+except:
+    pass
 
 logging.basicConfig(level=logging.INFO)
 
