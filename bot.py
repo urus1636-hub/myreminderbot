@@ -72,7 +72,6 @@ def back_to_menu_button() -> InlineKeyboardMarkup:
 # ---------- База данных ----------
 async def init_db():
     async with aiosqlite.connect(DATABASE) as db:
-        # Таблица лотерей
         await db.execute("""
             CREATE TABLE IF NOT EXISTS lotteries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,7 +84,6 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        # Таблица слотов
         await db.execute("""
             CREATE TABLE IF NOT EXISTS slots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -94,17 +92,14 @@ async def init_db():
                 username TEXT,
                 paid INTEGER DEFAULT 0,
                 slot_number INTEGER,
-                payment_id TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        # Таблица пользователей
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
                 username TEXT,
                 first_name TEXT,
-                balance INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -160,21 +155,14 @@ async def add_slot(lottery_id: int, user_id: int, username: str, slot_number: in
         await db.commit()
         return cursor.lastrowid
 
-async def mark_slot_paid(slot_id: int, payment_id: str):
+async def mark_slot_paid(slot_id: int):
     async with aiosqlite.connect(DATABASE) as db:
-        await db.execute(
-            "UPDATE slots SET paid = 1, payment_id = ? WHERE id = ?",
-            (payment_id, slot_id)
-        )
-        # Обновляем счётчик занятых слотов
+        await db.execute("UPDATE slots SET paid = 1 WHERE id = ?", (slot_id,))
         cursor = await db.execute("SELECT lottery_id FROM slots WHERE id = ?", (slot_id,))
         row = await cursor.fetchone()
         if row:
             lottery_id = row[0]
-            await db.execute(
-                "UPDATE lotteries SET taken_slots = taken_slots + 1 WHERE id = ?",
-                (lottery_id,)
-            )
+            await db.execute("UPDATE lotteries SET taken_slots = taken_slots + 1 WHERE id = ?", (lottery_id,))
         await db.commit()
 
 async def get_user_participations(user_id: int):
@@ -206,7 +194,7 @@ async def check_lottery_full(lottery_id: int) -> bool:
     lottery = await get_lottery(lottery_id)
     return lottery[4] >= lottery[3]
 
-async def pick_winner(lottery_id: int) -> int:
+async def pick_winner(lottery_id: int) -> tuple:
     async with aiosqlite.connect(DATABASE) as db:
         cursor = await db.execute(
             "SELECT user_id, username FROM slots WHERE lottery_id = ? AND paid = 1",
@@ -214,7 +202,7 @@ async def pick_winner(lottery_id: int) -> int:
         )
         slots = await cursor.fetchall()
         if not slots:
-            return None
+            return None, None
         winner = random.choice(slots)
         await db.execute(
             "UPDATE lotteries SET status = 'finished', winner_id = ? WHERE id = ?",
@@ -223,9 +211,18 @@ async def pick_winner(lottery_id: int) -> int:
         await db.commit()
         return winner
 
+async def get_slot_info(slot_id: int):
+    async with aiosqlite.connect(DATABASE) as db:
+        cursor = await db.execute("""
+            SELECT s.user_id, s.username, s.lottery_id, l.prize_name, l.slot_price
+            FROM slots s
+            JOIN lotteries l ON s.lottery_id = l.id
+            WHERE s.id = ?
+        """, (slot_id,))
+        return await cursor.fetchone()
+
 # ---------- Генерация ссылки на оплату ЮMoney ----------
 def generate_yoomoney_link(slot_id: int, amount: int, description: str) -> str:
-    """Генерирует ссылку на оплату через ЮMoney."""
     label = f"slot_{slot_id}"
     return (
         f"https://yoomoney.ru/quickpay/confirm.xml?"
@@ -236,6 +233,13 @@ def generate_yoomoney_link(slot_id: int, amount: int, description: str) -> str:
         f"sum={amount}&"
         f"label={label}"
     )
+
+async def notify_admin(text: str):
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(admin_id, text, parse_mode="HTML")
+        except Exception as e:
+            logging.error(f"Ошибка отправки админу {admin_id}: {e}")
 
 # ---------- Команды ----------
 @dp.message(Command("start"))
@@ -273,7 +277,7 @@ async def show_help(callback: types.CallbackQuery):
         "1️⃣ Выбери активную лотерею.\n"
         "2️⃣ Нажми «Занять слот» — бот выдаст ссылку на оплату.\n"
         "3️⃣ Оплати слот (банковской картой или ЮMoney).\n"
-        "4️⃣ Бот подтвердит оплату и закрепит слот за тобой.\n"
+        "4️⃣ Нажми «Я оплатил» — админ проверит и подтвердит.\n"
         "5️⃣ Когда все слоты заняты, бот случайно выберет победителя.\n\n"
         "🎁 Победитель получает приз!\n\n"
         "🔒 *Честность:* всё прозрачно, победитель выбирается автоматически."
@@ -377,7 +381,7 @@ async def admin_stats(callback: types.CallbackQuery):
         total_lotteries = (await cursor.fetchone())[0]
         cursor = await db.execute("SELECT COUNT(*) FROM slots WHERE paid = 1")
         total_slots = (await cursor.fetchone())[0]
-        cursor = await db.execute("SELECT SUM(slot_price) FROM slots s JOIN lotteries l ON s.lottery_id = l.id WHERE s.paid = 1")
+        cursor = await db.execute("SELECT SUM(l.slot_price) FROM slots s JOIN lotteries l ON s.lottery_id = l.id WHERE s.paid = 1")
         total_revenue = (await cursor.fetchone())[0] or 0
         commission = int(total_revenue * COMMISSION_PERCENT / 100)
 
@@ -471,57 +475,127 @@ async def take_slot(callback: types.CallbackQuery):
 
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="💳 Оплатить слот", url=payment_link))
-    builder.row(InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"check_payment_{slot_id}"))
+    builder.row(InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"confirm_payment_{slot_id}"))
     builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data=f"view_lottery_{lottery_id}"))
 
     await callback.message.edit_text(
         f"🎲 Ты занимаешь слот #{slot_number} в лотерее «{lottery[1]}».\n\n"
         f"💰 Сумма к оплате: {amount} ₽\n\n"
-        f"👇 Нажми кнопку ниже, чтобы оплатить, затем вернись и нажми «Я оплатил».",
+        f"👇 Нажми кнопку ниже, чтобы оплатить, затем вернись и нажми «Я оплатил».\n"
+        f"⏳ Админ проверит оплату и подтвердит слот.",
         reply_markup=builder.as_markup()
     )
     await callback.answer()
 
-@dp.callback_query(F.data.startswith("check_payment_"))
-async def check_payment(callback: types.CallbackQuery):
+@dp.callback_query(F.data.startswith("confirm_payment_"))
+async def confirm_payment(callback: types.CallbackQuery):
     slot_id = int(callback.data.split("_")[2])
 
-    # В реальном боте нужно проверять через API ЮMoney, но для MVP просто помечаем оплаченным
-    await mark_slot_paid(slot_id, f"manual_{datetime.now().timestamp()}")
+    # Отправляем уведомление админу
+    slot_info = await get_slot_info(slot_id)
+    if slot_info:
+        user_id, username, lottery_id, prize_name, amount = slot_info
+        user_display = f"@{username}" if username else f"ID: {user_id}"
+        admin_text = (
+            f"🔔 *Новая оплата ожидает подтверждения!*\n\n"
+            f"👤 Пользователь: {user_display}\n"
+            f"🎁 Лотерея: {prize_name}\n"
+            f"💰 Сумма: {amount} ₽\n"
+            f"🆔 ID слота: {slot_id}\n\n"
+            f"Проверь поступление в ЮMoney и нажми кнопку ниже для подтверждения."
+        )
+        builder = InlineKeyboardBuilder()
+        builder.row(InlineKeyboardButton(text="✅ Подтвердить оплату", callback_data=f"approve_payment_{slot_id}"))
+        builder.row(InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_payment_{slot_id}"))
+        await notify_admin(admin_text)
 
-    async with aiosqlite.connect(DATABASE) as db:
-        cursor = await db.execute("SELECT lottery_id FROM slots WHERE id = ?", (slot_id,))
-        row = await cursor.fetchone()
-        lottery_id = row[0]
+    await callback.message.edit_text(
+        "⏳ Запрос на подтверждение оплаты отправлен админу.\n"
+        "Как только админ подтвердит, твой слот будет активирован!",
+        reply_markup=main_menu_keyboard()
+    )
+    await callback.answer("✅ Запрос отправлен! Ожидай подтверждения.", show_alert=True)
 
-    await callback.answer("✅ Слот оплачен! Спасибо за участие!", show_alert=True)
+@dp.callback_query(F.data.startswith("approve_payment_"))
+async def approve_payment(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("⛔ Только админ может подтверждать оплату", show_alert=True)
+        return
 
-    # Проверяем, заполнилась ли лотерея
-    if await check_lottery_full(lottery_id):
-        winner = await pick_winner(lottery_id)
-        if winner:
-            winner_id, winner_username = winner
-            lottery = await get_lottery(lottery_id)
+    slot_id = int(callback.data.split("_")[2])
+    await mark_slot_paid(slot_id)
 
-            # Уведомляем всех участников
-            async with aiosqlite.connect(DATABASE) as db:
-                cursor = await db.execute("SELECT DISTINCT user_id FROM slots WHERE lottery_id = ? AND paid = 1", (lottery_id,))
-                participants = await cursor.fetchall()
+    slot_info = await get_slot_info(slot_id)
+    if slot_info:
+        user_id, username, lottery_id, prize_name, amount = slot_info
 
-            for (uid,) in participants:
-                try:
-                    winner_display = f"@{winner_username}" if winner_username else f"ID: {winner_id}"
-                    await bot.send_message(
-                        uid,
-                        f"🎉 Лотерея «{lottery[1]}» завершена!\n\n"
-                        f"🏆 Победитель: {winner_display}\n"
-                        f"🎁 Приз: {lottery[1]}\n\n"
-                        f"Спасибо за участие!"
-                    )
-                except:
-                    pass
+        # Уведомляем участника
+        try:
+            await bot.send_message(
+                user_id,
+                f"✅ Твоя оплата за слот в лотерее «{prize_name}» подтверждена!\n"
+                f"🎲 Слот успешно активирован. Жди завершения розыгрыша!"
+            )
+        except:
+            pass
 
-    await view_lottery(callback)
+        # Проверяем, заполнилась ли лотерея
+        if await check_lottery_full(lottery_id):
+            winner_id, winner_username = await pick_winner(lottery_id)
+            if winner_id:
+                lottery = await get_lottery(lottery_id)
+
+                # Уведомляем всех участников
+                async with aiosqlite.connect(DATABASE) as db:
+                    cursor = await db.execute("SELECT DISTINCT user_id FROM slots WHERE lottery_id = ? AND paid = 1", (lottery_id,))
+                    participants = await cursor.fetchall()
+
+                for (uid,) in participants:
+                    try:
+                        winner_display = f"@{winner_username}" if winner_username else f"ID: {winner_id}"
+                        await bot.send_message(
+                            uid,
+                            f"🎉 Лотерея «{lottery[1]}» завершена!\n\n"
+                            f"🏆 Победитель: {winner_display}\n"
+                            f"🎁 Приз: {lottery[1]}\n\n"
+                            f"Спасибо за участие!"
+                        )
+                    except:
+                        pass
+
+                await notify_admin(f"🏆 Лотерея «{prize_name}» завершена! Победитель: {winner_display}")
+
+    await callback.message.edit_text(f"✅ Оплата слота #{slot_id} подтверждена!")
+    await callback.answer("Оплата подтверждена", show_alert=True)
+
+@dp.callback_query(F.data.startswith("reject_payment_"))
+async def reject_payment(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("⛔ Только админ может отклонять оплату", show_alert=True)
+        return
+
+    slot_id = int(callback.data.split("_")[2])
+    slot_info = await get_slot_info(slot_id)
+
+    if slot_info:
+        user_id, username, lottery_id, prize_name, amount = slot_info
+        # Удаляем слот
+        async with aiosqlite.connect(DATABASE) as db:
+            await db.execute("DELETE FROM slots WHERE id = ?", (slot_id,))
+            await db.commit()
+
+        # Уведомляем участника
+        try:
+            await bot.send_message(
+                user_id,
+                f"❌ Твоя оплата за слот в лотерее «{prize_name}» не подтверждена.\n"
+                f"Возможно, деньги не поступили. Попробуй ещё раз или свяжись с админом."
+            )
+        except:
+            pass
+
+    await callback.message.edit_text(f"❌ Оплата слота #{slot_id} отклонена.")
+    await callback.answer("Оплата отклонена", show_alert=True)
 
 @dp.callback_query(F.data == "my_participations")
 async def my_participations(callback: types.CallbackQuery):
@@ -555,9 +629,22 @@ async def run_web_server():
     await site.start()
     logging.info(f"Web server started on port {PORT}")
 
+# ---------- Самопинг ----------
+async def self_ping(port: int):
+    await asyncio.sleep(30)
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"http://0.0.0.0:{port}/") as resp:
+                    logging.info(f"Self-ping: {resp.status}")
+        except Exception as e:
+            logging.warning(f"Self-ping failed: {e}")
+        await asyncio.sleep(300)
+
 # ---------- Запуск ----------
 async def main():
     await init_db()
+    asyncio.create_task(self_ping(PORT))
     await asyncio.gather(
         dp.start_polling(bot),
         run_web_server()
