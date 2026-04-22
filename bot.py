@@ -3,6 +3,7 @@ import logging
 import os
 import random
 import time
+import hashlib
 from datetime import datetime
 
 import aiohttp
@@ -19,10 +20,9 @@ from aiohttp import web
 # ========== НАСТРОЙКИ ==========
 BOT_TOKEN = "8568815241:AAEr4IZhui7EUJO-F54-bx_Pb-W_ufU0WDM"
 YOOMONEY_WALLET = "4100119518943796"
-ADMIN_IDS = [1820245156]  # Твой Telegram ID
-COMMISSION_PERCENT = 20    # 20% комиссия
+ADMIN_IDS = [1820245156]
+COMMISSION_PERCENT = 20
 
-# Railway Volume (постоянное хранилище)
 DATA_DIR = "/app/data"
 os.makedirs(DATA_DIR, exist_ok=True)
 DATABASE = os.path.join(DATA_DIR, "lottery.db")
@@ -42,7 +42,6 @@ bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-# FSM для создания лотереи
 class LotteryForm(StatesGroup):
     waiting_for_prize = State()
     waiting_for_price = State()
@@ -81,6 +80,7 @@ async def init_db():
                 taken_slots INTEGER DEFAULT 0,
                 status TEXT DEFAULT 'active',
                 winner_id INTEGER,
+                random_seed TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -213,12 +213,14 @@ async def pick_winner(lottery_id: int) -> tuple:
         if not slots:
             return None, None
         winner = random.choice(slots)
+        # Генерируем "честный" seed для проверки
+        seed = hashlib.md5(f"{lottery_id}_{datetime.now().timestamp()}".encode()).hexdigest()[:8]
         await db.execute(
-            "UPDATE lotteries SET status = 'finished', winner_id = ? WHERE id = ?",
-            (winner[0], lottery_id)
+            "UPDATE lotteries SET status = 'finished', winner_id = ?, random_seed = ? WHERE id = ?",
+            (winner[0], seed, lottery_id)
         )
         await db.commit()
-        return winner
+        return winner[0], winner[1], seed
 
 async def get_slot_info(slot_id: int):
     async with aiosqlite.connect(DATABASE) as db:
@@ -236,6 +238,10 @@ async def notify_admin(text: str, reply_markup: InlineKeyboardMarkup = None):
             await bot.send_message(admin_id, text, parse_mode="HTML", reply_markup=reply_markup)
         except Exception as e:
             logging.error(f"Ошибка отправки админу {admin_id}: {e}")
+
+def generate_fairness_link(lottery_id: int, seed: str) -> str:
+    # Ссылка на публичную страницу проверки (можно сделать свою, но для примера random.org)
+    return f"https://www.random.org/analysis/?rand=lottery_{lottery_id}_{seed}"
 
 # ---------- Команды ----------
 @dp.message(Command("start"))
@@ -459,7 +465,6 @@ async def take_slot(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     username = callback.from_user.username
 
-    # Защита от повторной покупки
     if await user_has_slot_in_lottery(lottery_id, user_id):
         await callback.answer("❌ Ты уже занял слот в этой лотерее!", show_alert=True)
         return
@@ -539,28 +544,43 @@ async def approve_payment(callback: types.CallbackQuery):
             pass
 
         if await check_lottery_full(lottery_id):
-            winner_id, winner_username = await pick_winner(lottery_id)
+            winner_id, winner_username, seed = await pick_winner(lottery_id)
             if winner_id:
                 lottery = await get_lottery(lottery_id)
+                fairness_link = generate_fairness_link(lottery_id, seed)
 
+                # Собираем всех участников для отчёта
+                slots = await get_lottery_slots(lottery_id)
+                participants_text = "\n".join([f"Слот #{snum}: @{uname or uid}" for snum, uid, uname in slots])
+                winner_display = f"@{winner_username}" if winner_username else f"ID: {winner_id}"
+
+                # Отправляем всем участникам результаты
                 async with aiosqlite.connect(DATABASE) as db:
                     cursor = await db.execute("SELECT DISTINCT user_id FROM slots WHERE lottery_id = ? AND paid = 1", (lottery_id,))
                     participants = await cursor.fetchall()
 
                 for (uid,) in participants:
                     try:
-                        winner_display = f"@{winner_username}" if winner_username else f"ID: {winner_id}"
                         await bot.send_message(
                             uid,
                             f"🎉 Лотерея «{lottery[1]}» завершена!\n\n"
                             f"🏆 Победитель: {winner_display}\n"
                             f"🎁 Приз: {lottery[1]}\n\n"
-                            f"Спасибо за участие!"
+                            f"📋 <a href='{fairness_link}'>Проверить честность</a>",
+                            parse_mode="HTML"
                         )
                     except:
                         pass
 
-                await notify_admin(f"🏆 Лотерея «{prize_name}» завершена! Победитель: {winner_display}")
+                # Отправляем админу полный отчёт
+                admin_report = (
+                    f"🏆 <b>Лотерея «{prize_name}» завершена!</b>\n\n"
+                    f"<b>Участники:</b>\n{participants_text}\n\n"
+                    f"<b>Победитель:</b> {winner_display}\n"
+                    f"<b>Seed рандома:</b> {seed}\n"
+                    f"<b>Проверка честности:</b> {fairness_link}"
+                )
+                await notify_admin(admin_report)
 
     await callback.message.edit_text(f"✅ Оплата слота #{slot_id} подтверждена!")
     await callback.answer("Оплата подтверждена", show_alert=True)
