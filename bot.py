@@ -22,6 +22,10 @@ from dateutil import parser
 BOT_TOKEN = "8651845065:AAFYzociP_Wojmwg4MnWOn3JXunzTC-2PdM"  # <-- ВСТАВЬ СВОЙ ТОКЕН
 DATABASE = "reminders.db"
 PORT = 8000
+
+# Админские ID (тебе будут приходить логи)
+ADMIN_IDS = [1820245156]
+ADMIN_LOG_CHAT = 1820245156  # Твой ID для логов
 # ================================
 
 # Устанавливаем московское время
@@ -43,6 +47,13 @@ class ReminderForm(StatesGroup):
     waiting_for_text = State()
     waiting_for_time = State()
     editing_time = State()
+
+# ---------- Функция логирования ----------
+async def log_to_admin(text: str):
+    try:
+        await bot.send_message(ADMIN_LOG_CHAT, text, parse_mode="HTML")
+    except Exception as e:
+        logging.error(f"Ошибка отправки лога: {e}")
 
 # ---------- Клавиатуры ----------
 def main_menu_keyboard() -> InlineKeyboardMarkup:
@@ -145,7 +156,49 @@ async def send_reminder(user_id: int, text: str, reminder_id: int):
 def is_likely_datetime(text: str) -> bool:
     return bool(re.search(r'\d', text)) and bool(re.search(r'[.\-:/]', text))
 
-# ---------- Команды ----------
+# ---------- Админ-команды ----------
+@dp.message(Command("admin"))
+async def cmd_admin(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("⛔ Доступ запрещён.")
+        return
+    await message.answer(
+        "🔧 Админ-команды:\n\n"
+        "/stats — статистика по боту\n"
+        "/admin — это сообщение"
+    )
+
+@dp.message(Command("stats"))
+async def cmd_stats(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("⛔ Доступ запрещён.")
+        return
+
+    async with aiosqlite.connect(DATABASE) as db:
+        cursor = await db.execute("SELECT COUNT(DISTINCT user_id) FROM reminders")
+        users_count = (await cursor.fetchone())[0]
+
+        cursor = await db.execute("SELECT COUNT(*) FROM reminders")
+        reminders_count = (await cursor.fetchone())[0]
+
+        cursor = await db.execute(
+            "SELECT user_id, text, remind_at FROM reminders ORDER BY id DESC LIMIT 5"
+        )
+        last_reminders = await cursor.fetchall()
+
+    text = f"📊 <b>Статистика бота</b>\n\n"
+    text += f"👥 Пользователей с напоминаниями: {users_count}\n"
+    text += f"⏰ Активных напоминаний: {reminders_count}\n\n"
+
+    if last_reminders:
+        text += "📋 <b>Последние напоминания:</b>\n"
+        for user_id, rem_text, remind_at in last_reminders:
+            dt = datetime.fromisoformat(remind_at)
+            text += f"• [{user_id}] {rem_text[:20]}... — {dt.strftime('%d.%m %H:%M')}\n"
+
+    await message.answer(text, parse_mode="HTML")
+
+# ---------- Обычные команды ----------
 @dp.message(Command("start", "menu"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
@@ -230,6 +283,15 @@ async def process_time(message: types.Message, state: FSMContext):
         id=f"rem_{rem_id}"
     )
     logging.info(f"Добавлено напоминание {rem_id} на {remind_at}")
+
+    # Логирование
+    username = message.from_user.username or "нет username"
+    await log_to_admin(
+        f"🆕 <b>Новое напоминание</b>\n"
+        f"👤 Пользователь: @{username} (ID: <code>{user_id}</code>)\n"
+        f"📝 Текст: {reminder_text}\n"
+        f"⏰ Напомнить: {remind_at.strftime('%d.%m.%Y %H:%M')}"
+    )
 
     await message.answer(
         f"✅ Запомнил! Напомню {remind_at.strftime('%d.%m.%Y в %H:%M')}:\n«{reminder_text}»",
