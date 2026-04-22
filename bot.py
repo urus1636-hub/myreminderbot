@@ -19,7 +19,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dateutil import parser
 
 # ========== НАСТРОЙКИ ==========
-BOT_TOKEN = "8651845065:AAHOi3NvhT0YrgHzomFO1TTwgquZ3tPykrU"  # <-- ВСТАВЬ СВОЙ ТОКЕН
+BOT_TOKEN = "8651845065:AAHOi3NvhT0YrgHzomFO1TTwgquZ3tPykrU"  # Твой токен
 DATABASE = "reminders.db"
 PORT = 8000
 
@@ -204,29 +204,29 @@ async def cmd_stats(message: types.Message):
 async def delegate_start(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(ReminderForm.delegate_target)
     await callback.message.edit_text(
-        "👤 Введите @username или числовой ID пользователя:",
+        "👤 Введите **числовой ID** пользователя, которому хотите отправить напоминание.\n"
+        "Чтобы узнать свой ID, отправьте боту команду /id",
+        parse_mode="Markdown",
         reply_markup=back_to_menu_button()
     )
     await callback.answer()
 
+@dp.message(Command("id"))
+async def cmd_id(message: types.Message):
+    await message.answer(f"Твой ID: <code>{message.from_user.id}</code>", parse_mode="HTML")
+
 @dp.message(ReminderForm.delegate_target)
 async def delegate_target(message: types.Message, state: FSMContext):
     target = message.text.strip()
-    target_id = None
-    target_username = None
-
-    if target.startswith("@"):
-        target_username = target[1:]
-    elif target.isdigit():
-        target_id = int(target)
-    else:
-        await message.answer("❌ Пожалуйста, введите @username или числовой ID.")
+    if not target.isdigit():
+        await message.answer("❌ Пожалуйста, введите **числовой ID**. Узнать его можно командой /id")
         return
 
-    await state.update_data(target_id=target_id, target_username=target_username)
+    target_id = int(target)
+    await state.update_data(target_id=target_id)
     await state.set_state(ReminderForm.delegate_text)
     await message.answer(
-        f"📝 Введите текст напоминания для {target}:",
+        f"📝 Введите текст напоминания для пользователя {target_id}:",
         reply_markup=back_to_menu_button()
     )
 
@@ -260,7 +260,6 @@ async def delegate_time(message: types.Message, state: FSMContext):
     data = await state.get_data()
     reminder_text = data["reminder_text"]
     target_id = data.get("target_id")
-    target_username = data.get("target_username")
     from_user_id = message.from_user.id
     from_username = message.from_user.username
 
@@ -270,70 +269,45 @@ async def delegate_time(message: types.Message, state: FSMContext):
         f"📝 «{reminder_text}»\n"
         f"⏰ Оно сработает {remind_at.strftime('%d.%m.%Y в %H:%M')}"
     )
-
-    if target_id:
-        try:
-            await bot.send_message(target_id, notify_message)
-        except Exception as e:
-            logging.error(f"Не удалось отправить уведомление {target_id}: {e}")
-    elif target_username:
-        try:
-            await bot.send_message(f"@{target_username}", notify_message)
-        except Exception as e:
-            logging.error(f"Не удалось отправить уведомление @{target_username}: {e}")
+    try:
+        await bot.send_message(target_id, notify_message)
+    except Exception as e:
+        logging.error(f"Не удалось отправить уведомление {target_id}: {e}")
+        await message.answer("❌ Не удалось отправить уведомление пользователю. Возможно, он не запускал бота.")
+        return
 
     # Создаём напоминание
-    actual_target_id = target_id if target_id else 0
     rem_id = await add_reminder(
-        user_id=actual_target_id,
+        user_id=target_id,
         text=reminder_text,
         remind_at=remind_at,
         from_user_id=from_user_id,
         from_username=from_username
     )
 
-    if actual_target_id == 0 and target_username:
-        scheduler.add_job(
-            send_reminder_by_username,
-            trigger="date",
-            run_date=remind_at,
-            args=[target_username, reminder_text, rem_id, from_username],
-            id=f"rem_{rem_id}"
-        )
-    else:
-        scheduler.add_job(
-            send_reminder,
-            trigger="date",
-            run_date=remind_at,
-            args=[actual_target_id, reminder_text, rem_id, from_user_id, from_username],
-            id=f"rem_{rem_id}"
-        )
+    scheduler.add_job(
+        send_reminder,
+        trigger="date",
+        run_date=remind_at,
+        args=[target_id, reminder_text, rem_id, from_user_id, from_username],
+        id=f"rem_{rem_id}"
+    )
 
     await log_to_admin(
         f"🔄 <b>Делегированное напоминание</b>\n"
         f"👤 От: @{from_username} (ID: <code>{from_user_id}</code>)\n"
-        f"🎯 Кому: @{target_username or target_id}\n"
+        f"🎯 Кому: <code>{target_id}</code>\n"
         f"📝 Текст: {reminder_text}\n"
         f"⏰ Напомнить: {remind_at.strftime('%d.%m.%Y %H:%M')}"
     )
 
     await message.answer(
-        f"✅ Напоминание для @{target_username or target_id} создано!\n"
+        f"✅ Напоминание для пользователя <code>{target_id}</code> создано!\n"
         f"Получатель уже уведомлён. Само напоминание придёт {remind_at.strftime('%d.%m.%Y в %H:%M')}.",
+        parse_mode="HTML",
         reply_markup=main_menu_keyboard()
     )
     await state.clear()
-
-async def send_reminder_by_username(username: str, text: str, reminder_id: int, from_username: str = None):
-    try:
-        message = f"⏰ НАПОМИНАНИЕ!\n\n"
-        if from_username:
-            message += f"👤 От пользователя @{from_username}\n"
-        message += f"\n📝 «{text}»"
-        await bot.send_message(f"@{username}", message)
-        logging.info(f"Напоминание {reminder_id} отправлено по username @{username}")
-    except Exception as e:
-        logging.error(f"Ошибка отправки по username @{username}: {e}")
 
 # ---------- Обычные напоминания ----------
 @dp.message(Command("start", "menu"))
@@ -343,7 +317,8 @@ async def cmd_start(message: types.Message, state: FSMContext):
         "👋 Привет! Я бот-напоминалка.\n\n"
         "Используй кнопки ниже или команды:\n"
         "/list — мои напоминания\n"
-        "/delete ID — удалить напоминание",
+        "/delete ID — удалить напоминание\n"
+        "/id — узнать свой ID",
         reply_markup=main_menu_keyboard()
     )
 
@@ -358,9 +333,10 @@ async def show_help(callback: types.CallbackQuery):
     text = (
         "📌 *Как пользоваться:*\n\n"
         "• Кнопка «Создать» — напоминание для себя.\n"
-        "• Кнопка «Делегировать» — отправить напоминание другу.\n"
+        "• Кнопка «Делегировать» — отправить напоминание другу по его **числовому ID**.\n"
         "• Кнопка «Мои напоминания» — посмотреть и управлять.\n\n"
         "Команды:\n"
+        "/id — узнать свой ID\n"
         "/list — список напоминаний\n"
         "/delete ID — удалить"
     )
