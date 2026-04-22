@@ -84,6 +84,16 @@ def reminder_actions_keyboard(rem_id: int) -> InlineKeyboardMarkup:
 # ---------- База данных ----------
 async def init_db():
     async with aiosqlite.connect(DATABASE) as db:
+        # Таблица пользователей (для запоминания ID по username)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        # Таблица напоминаний
         await db.execute("""
             CREATE TABLE IF NOT EXISTS reminders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -96,6 +106,25 @@ async def init_db():
         """)
         await db.commit()
     logging.info("База данных инициализирована")
+
+async def save_user(user_id: int, username: str = None, first_name: str = None):
+    """Сохраняет или обновляет информацию о пользователе."""
+    async with aiosqlite.connect(DATABASE) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO users (user_id, username, first_name, last_activity) VALUES (?, ?, ?, ?)",
+            (user_id, username, first_name, datetime.now())
+        )
+        await db.commit()
+
+async def get_user_id_by_username(username: str) -> int | None:
+    """Ищет ID пользователя по username в нашей БД."""
+    async with aiosqlite.connect(DATABASE) as db:
+        cursor = await db.execute(
+            "SELECT user_id FROM users WHERE username = ?",
+            (username,)
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else None
 
 async def add_reminder(user_id: int, text: str, remind_at: datetime, from_user_id: int = None, from_username: str = None) -> int:
     async with aiosqlite.connect(DATABASE) as db:
@@ -217,19 +246,12 @@ async def delegate_target(message: types.Message, state: FSMContext):
         return
 
     username = target[1:]
-    
-    # Пытаемся получить ID через get_chat
-    try:
-        chat = await bot.get_chat(f"@{username}")
-        target_id = chat.id
-    except Exception as e:
-        logging.warning(f"get_chat не сработал для @{username}: {e}")
+    target_id = await get_user_id_by_username(username)
+
+    if target_id is None:
         await message.answer(
-            f"❌ Не удалось найти пользователя @{username}.\n"
-            f"Убедись, что:\n"
-            f"1. Пользователь запустил бота (отправил /start).\n"
-            f"2. Username введён правильно.\n\n"
-            f"Если всё верно, попроси пользователя написать боту любое сообщение."
+            f"❌ Пользователь @{username} не найден в моей базе.\n"
+            f"Попроси его запустить бота (отправить /start), и повтори попытку."
         )
         return
 
@@ -322,7 +344,9 @@ async def delegate_time(message: types.Message, state: FSMContext):
 # ---------- Обычные напоминания ----------
 @dp.message(Command("start", "menu"))
 async def cmd_start(message: types.Message, state: FSMContext):
-    await state.clear()  # <-- ВАЖНО: сбрасываем состояние
+    await state.clear()
+    # Сохраняем пользователя в БД при старте
+    await save_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
     await message.answer(
         "👋 Привет! Я бот-напоминалка.\n\n"
         "Используй кнопки ниже или команды:\n"
@@ -333,13 +357,13 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data == "main_menu")
 async def show_main_menu(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()  # <-- ВАЖНО: сбрасываем состояние
+    await state.clear()
     await callback.message.edit_text("🏠 Главное меню", reply_markup=main_menu_keyboard())
     await callback.answer()
 
 @dp.callback_query(F.data == "help")
 async def show_help(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()  # <-- ВАЖНО: сбрасываем состояние
+    await state.clear()
     text = (
         "📌 *Как пользоваться:*\n\n"
         "• Кнопка «Создать» — напоминание для себя.\n"
