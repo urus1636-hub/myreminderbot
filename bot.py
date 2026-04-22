@@ -20,7 +20,7 @@ from apscheduler.triggers.cron import CronTrigger
 from dateutil import parser
 
 # ========== НАСТРОЙКИ ==========
-BOT_TOKEN = "ТВОЙ_ТОКЕН_СЮДА"
+BOT_TOKEN = "8651845065:AAEt93aOi1Brrj-ETAZGdEQEs9GrVT8zDEw"
 DATABASE = "reminders.db"
 PORT = 8000
 
