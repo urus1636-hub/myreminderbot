@@ -19,7 +19,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dateutil import parser
 
 # ========== НАСТРОЙКИ ==========
-BOT_TOKEN = "8651845065:AAHOi3NvhT0YrgHzomFO1TTwgquZ3tPykrU"
+BOT_TOKEN = "8651845065:AAHOi3NvhT0YrgHzomFO1TTwgquZ3tPykrU"  # <-- ВСТАВЬ СВОЙ ТОКЕН
 DATABASE = "reminders.db"
 PORT = 8000
 
@@ -70,6 +70,15 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
 def back_to_menu_button() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu"))
+    return builder.as_markup()
+
+def reminder_actions_keyboard(rem_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="❌ Удалить", callback_data=f"delete_{rem_id}"),
+        InlineKeyboardButton(text="✏️ Изменить", callback_data=f"edit_{rem_id}")
+    )
+    builder.row(InlineKeyboardButton(text="🔙 Назад к списку", callback_data="list_reminders"))
     return builder.as_markup()
 
 # ---------- База данных ----------
@@ -190,12 +199,12 @@ async def cmd_stats(message: types.Message):
             text += f"• <code>{user_id}</code> — {rem_text[:20]}... — {dt.strftime('%d.%m %H:%M')}{via}\n"
     await message.answer(text, parse_mode="HTML")
 
-# ---------- Делегирование через кнопку ----------
+# ---------- Делегирование ----------
 @dp.callback_query(F.data == "delegate_reminder")
 async def delegate_start(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(ReminderForm.delegate_target)
     await callback.message.edit_text(
-        "👤 Введите @username или числовой ID пользователя, которому хотите отправить напоминание:",
+        "👤 Введите @username или числовой ID пользователя:",
         reply_markup=back_to_menu_button()
     )
     await callback.answer()
@@ -255,18 +264,35 @@ async def delegate_time(message: types.Message, state: FSMContext):
     from_user_id = message.from_user.id
     from_username = message.from_user.username
 
-    # Если ID известен, используем его, иначе сохраняем username
-    actual_target_id = target_id
+    # Уведомление получателю
+    notify_message = (
+        f"📬 Вам пришло напоминание от @{from_username or from_user_id}:\n"
+        f"📝 «{reminder_text}»\n"
+        f"⏰ Оно сработает {remind_at.strftime('%d.%m.%Y в %H:%M')}"
+    )
 
+    if target_id:
+        try:
+            await bot.send_message(target_id, notify_message)
+        except Exception as e:
+            logging.error(f"Не удалось отправить уведомление {target_id}: {e}")
+    elif target_username:
+        try:
+            await bot.send_message(f"@{target_username}", notify_message)
+        except Exception as e:
+            logging.error(f"Не удалось отправить уведомление @{target_username}: {e}")
+
+    # Создаём напоминание
+    actual_target_id = target_id if target_id else 0
     rem_id = await add_reminder(
-        user_id=actual_target_id if actual_target_id else 0,
+        user_id=actual_target_id,
         text=reminder_text,
         remind_at=remind_at,
         from_user_id=from_user_id,
         from_username=from_username
     )
 
-    if actual_target_id is None and target_username:
+    if actual_target_id == 0 and target_username:
         scheduler.add_job(
             send_reminder_by_username,
             trigger="date",
@@ -293,13 +319,12 @@ async def delegate_time(message: types.Message, state: FSMContext):
 
     await message.answer(
         f"✅ Напоминание для @{target_username or target_id} создано!\n"
-        f"Оно придёт {remind_at.strftime('%d.%m.%Y в %H:%M')}.",
+        f"Получатель уже уведомлён. Само напоминание придёт {remind_at.strftime('%d.%m.%Y в %H:%M')}.",
         reply_markup=main_menu_keyboard()
     )
     await state.clear()
 
 async def send_reminder_by_username(username: str, text: str, reminder_id: int, from_username: str = None):
-    logging.info(f"Попытка отправить напоминание {reminder_id} пользователю @{username}")
     try:
         message = f"⏰ НАПОМИНАНИЕ!\n\n"
         if from_username:
@@ -310,17 +335,15 @@ async def send_reminder_by_username(username: str, text: str, reminder_id: int, 
     except Exception as e:
         logging.error(f"Ошибка отправки по username @{username}: {e}")
 
-# ---------- Обычные команды ----------
+# ---------- Обычные напоминания ----------
 @dp.message(Command("start", "menu"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(
         "👋 Привет! Я бот-напоминалка.\n\n"
-        "📌 Команды:\n"
-        "/remind @user текст — отправить напоминание другу\n"
-        "/list — твои напоминания\n"
-        "/delete ID — удалить напоминание\n"
-        "Или используй кнопки ниже:",
+        "Используй кнопки ниже или команды:\n"
+        "/list — мои напоминания\n"
+        "/delete ID — удалить напоминание",
         reply_markup=main_menu_keyboard()
     )
 
@@ -334,10 +357,12 @@ async def show_main_menu(callback: types.CallbackQuery, state: FSMContext):
 async def show_help(callback: types.CallbackQuery):
     text = (
         "📌 *Как пользоваться:*\n\n"
-        "• Напиши текст — я спрошу когда напомнить.\n"
+        "• Кнопка «Создать» — напоминание для себя.\n"
         "• Кнопка «Делегировать» — отправить напоминание другу.\n"
-        "• /list — твои напоминания.\n"
-        "• /delete ID — удалить напоминание."
+        "• Кнопка «Мои напоминания» — посмотреть и управлять.\n\n"
+        "Команды:\n"
+        "/list — список напоминаний\n"
+        "/delete ID — удалить"
     )
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu"))
@@ -397,39 +422,120 @@ async def process_time(message: types.Message, state: FSMContext):
     )
     await state.clear()
 
-@dp.message(Command("list"))
-async def cmd_list(message: types.Message):
-    reminders = await get_user_reminders(message.from_user.id)
+# ---------- Просмотр и управление ----------
+@dp.callback_query(F.data == "list_reminders")
+async def list_reminders(callback: types.CallbackQuery):
+    reminders = await get_user_reminders(callback.from_user.id)
     if not reminders:
-        await message.answer("У тебя пока нет активных напоминаний.", reply_markup=main_menu_keyboard())
+        await callback.message.edit_text(
+            "У тебя пока нет активных напоминаний.",
+            reply_markup=back_to_menu_button()
+        )
+        await callback.answer()
         return
-    lines = []
+
+    builder = InlineKeyboardBuilder()
     for rem_id, rem_text, remind_at, from_user_id, from_username in reminders:
         dt = datetime.fromisoformat(remind_at)
         via = f" (от @{from_username})" if from_username else ""
-        lines.append(f"🆔 {rem_id} | {dt.strftime('%d.%m %H:%M')} — {rem_text[:30]}{via}")
-    await message.answer("📋 *Твои напоминания:*\n" + "\n".join(lines), parse_mode="Markdown", reply_markup=main_menu_keyboard())
+        label = f"{rem_text[:30]}{'…' if len(rem_text)>30 else ''} — {dt.strftime('%d.%m %H:%M')}{via}"
+        builder.row(InlineKeyboardButton(text=label, callback_data=f"detail_{rem_id}"))
+    builder.row(InlineKeyboardButton(text="🔙 Назад в меню", callback_data="main_menu"))
 
-@dp.message(Command("delete"))
-async def cmd_delete(message: types.Message):
-    args = message.text.split()
-    if len(args) != 2:
-        await message.answer("Использование: /delete <ID>")
+    await callback.message.edit_text(
+        "📋 *Твои напоминания:*\n\nВыбери одно, чтобы управлять.",
+        parse_mode="Markdown",
+        reply_markup=builder.as_markup()
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("detail_"))
+async def reminder_detail(callback: types.CallbackQuery):
+    rem_id = int(callback.data.split("_")[1])
+    reminder = await get_reminder(rem_id, callback.from_user.id)
+    if not reminder:
+        await callback.message.edit_text("❌ Напоминание не найдено.", reply_markup=back_to_menu_button())
+        await callback.answer()
         return
-    try:
-        rem_id = int(args[1])
-    except:
-        await message.answer("ID должен быть числом.")
-        return
-    deleted = await delete_reminder(rem_id, message.from_user.id)
+
+    _, text, remind_at_str, from_user_id, from_username = reminder
+    dt = datetime.fromisoformat(remind_at_str)
+    via = f"\n👤 От: @{from_username}" if from_username else ""
+
+    await callback.message.edit_text(
+        f"📌 *Напоминание*\n\n📝 {text}\n⏰ {dt.strftime('%d.%m.%Y в %H:%M')}{via}",
+        parse_mode="Markdown",
+        reply_markup=reminder_actions_keyboard(rem_id)
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("delete_"))
+async def delete_callback(callback: types.CallbackQuery):
+    rem_id = int(callback.data.split("_")[1])
+    deleted = await delete_reminder(rem_id, callback.from_user.id)
     if deleted:
         try:
             scheduler.remove_job(f"rem_{rem_id}")
         except:
             pass
-        await message.answer(f"✅ Напоминание {rem_id} удалено.")
+        await callback.answer("✅ Удалено", show_alert=False)
     else:
-        await message.answer("❌ Напоминание не найдено.")
+        await callback.answer("❌ Ошибка", show_alert=True)
+    await list_reminders(callback)
+
+@dp.callback_query(F.data.startswith("edit_"))
+async def edit_callback(callback: types.CallbackQuery, state: FSMContext):
+    rem_id = int(callback.data.split("_")[1])
+    reminder = await get_reminder(rem_id, callback.from_user.id)
+    if not reminder:
+        await callback.message.edit_text("❌ Напоминание не найдено.", reply_markup=back_to_menu_button())
+        await callback.answer()
+        return
+
+    await state.update_data(edit_id=rem_id, old_text=reminder[1])
+    await state.set_state(ReminderForm.editing_time)
+    await callback.message.edit_text(
+        f"Текущее: «{reminder[1]}» на {datetime.fromisoformat(reminder[2]).strftime('%d.%m.%Y %H:%M')}\n\n"
+        f"Введи *новое время*: ДД.ММ.ГГГГ ЧЧ:ММ",
+        parse_mode="Markdown",
+        reply_markup=back_to_menu_button()
+    )
+    await callback.answer()
+
+@dp.message(ReminderForm.editing_time)
+async def process_edit_time(message: types.Message, state: FSMContext):
+    time_str = message.text.strip()
+    if not is_likely_datetime(time_str):
+        await message.answer("❌ Пожалуйста, введи дату и время в формате *ДД.ММ.ГГГГ ЧЧ:ММ*.", parse_mode="Markdown", reply_markup=back_to_menu_button())
+        return
+    try:
+        new_time = parser.parse(time_str, dayfirst=True)
+        if new_time < datetime.now():
+            await message.answer("⏳ Это время уже прошло. Введи будущее:", reply_markup=back_to_menu_button())
+            return
+    except:
+        await message.answer("❌ Неверный формат. Попробуй снова: *ДД.ММ.ГГГГ ЧЧ:ММ*", parse_mode="Markdown", reply_markup=back_to_menu_button())
+        return
+
+    data = await state.get_data()
+    rem_id = data["edit_id"]
+    old_text = data["old_text"]
+    user_id = message.from_user.id
+
+    await delete_reminder(rem_id, user_id)
+    try:
+        scheduler.remove_job(f"rem_{rem_id}")
+    except:
+        pass
+
+    new_id = await add_reminder(user_id, old_text, new_time)
+    scheduler.add_job(send_reminder, trigger="date", run_date=new_time, args=[user_id, old_text, new_id], id=f"rem_{new_id}")
+
+    await message.answer(
+        f"✅ Время обновлено! Новое напоминание в {new_time.strftime('%d.%m.%Y %H:%M')}",
+        reply_markup=main_menu_keyboard()
+    )
+    await state.clear()
 
 # ---------- Веб-сервер и самопинг ----------
 async def healthcheck(request):
