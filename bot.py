@@ -170,19 +170,6 @@ async def send_reminder(user_id: int, text: str, reminder_id: int, from_user_id:
 def is_likely_datetime(text: str) -> bool:
     return bool(re.search(r'\d', text)) and bool(re.search(r'[.\-:/]', text))
 
-# ---------- Получение ID по username ----------
-async def get_user_id_by_username(username: str) -> int | None:
-    """Возвращает ID пользователя по username, если бот его знает."""
-    try:
-        # Пытаемся отправить сообщение — если пользователь писал боту, API вернёт его ID в ответе
-        # Но есть нюанс: send_message с username работает только если пользователь писал боту.
-        # Альтернатива — использовать getChat, но он тоже требует, чтобы бот «знал» пользователя.
-        chat = await bot.get_chat(f"@{username}")
-        return chat.id
-    except Exception as e:
-        logging.warning(f"Не удалось получить ID для @{username}: {e}")
-        return None
-
 # ---------- Админ-команды ----------
 @dp.message(Command("admin"))
 async def cmd_admin(message: types.Message):
@@ -230,12 +217,19 @@ async def delegate_target(message: types.Message, state: FSMContext):
         return
 
     username = target[1:]
-    target_id = await get_user_id_by_username(username)
-
-    if target_id is None:
+    
+    # Пытаемся получить ID через get_chat
+    try:
+        chat = await bot.get_chat(f"@{username}")
+        target_id = chat.id
+    except Exception as e:
+        logging.warning(f"get_chat не сработал для @{username}: {e}")
         await message.answer(
-            f"❌ Не удалось найти пользователя @{username}. Возможно, он никогда не писал этому боту.\n"
-            f"Попроси его отправить боту любое сообщение (например, /start), и попробуй снова."
+            f"❌ Не удалось найти пользователя @{username}.\n"
+            f"Убедись, что:\n"
+            f"1. Пользователь запустил бота (отправил /start).\n"
+            f"2. Username введён правильно.\n\n"
+            f"Если всё верно, попроси пользователя написать боту любое сообщение."
         )
         return
 
@@ -328,7 +322,7 @@ async def delegate_time(message: types.Message, state: FSMContext):
 # ---------- Обычные напоминания ----------
 @dp.message(Command("start", "menu"))
 async def cmd_start(message: types.Message, state: FSMContext):
-    await state.clear()
+    await state.clear()  # <-- ВАЖНО: сбрасываем состояние
     await message.answer(
         "👋 Привет! Я бот-напоминалка.\n\n"
         "Используй кнопки ниже или команды:\n"
@@ -339,12 +333,13 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data == "main_menu")
 async def show_main_menu(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()
+    await state.clear()  # <-- ВАЖНО: сбрасываем состояние
     await callback.message.edit_text("🏠 Главное меню", reply_markup=main_menu_keyboard())
     await callback.answer()
 
 @dp.callback_query(F.data == "help")
-async def show_help(callback: types.CallbackQuery):
+async def show_help(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()  # <-- ВАЖНО: сбрасываем состояние
     text = (
         "📌 *Как пользоваться:*\n\n"
         "• Кнопка «Создать» — напоминание для себя.\n"
