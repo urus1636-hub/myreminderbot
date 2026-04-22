@@ -19,7 +19,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dateutil import parser
 
 # ========== НАСТРОЙКИ ==========
-BOT_TOKEN = "8651845065:AAEt93aOi1Brrj-ETAZGdEQEs9GrVT8zDEw"  # <-- ВСТАВЬ СВОЙ ТОКЕН
+BOT_TOKEN = "8651845065:AAEt93aOi1Brrj-ETAZGdEQEs9GrVT8zDEw"
 DATABASE = "reminders.db"
 PORT = 8000
 
@@ -45,7 +45,7 @@ class ReminderForm(StatesGroup):
     waiting_for_text = State()
     waiting_for_time = State()
     editing_time = State()
-    delegate_share = State()  # ожидание шаринга контакта
+    delegate_share = State()
     delegate_text = State()
     delegate_time = State()
 
@@ -74,7 +74,7 @@ def back_to_menu_button() -> InlineKeyboardMarkup:
 
 def share_contact_keyboard() -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
-    builder.row(KeyboardButton(text="👤 Выбрать получателя", request_user=KeyboardButtonRequestUser(request_id=1, user_is_bot=False)))
+    builder.row(KeyboardButton(text="👤 Выбрать получателя", request_user=types.KeyboardButtonRequestUser(request_id=1)))
     builder.row(KeyboardButton(text="🔙 Отмена"))
     return builder.as_markup(resize_keyboard=True, one_time_keyboard=True)
 
@@ -221,12 +221,13 @@ async def cmd_stats(message: types.Message):
             text += f"• <code>{user_id}</code> — {rem_text[:20]}... — {dt.strftime('%d.%m %H:%M')}{via}\n"
     await message.answer(text, parse_mode="HTML")
 
-# ---------- Делегирование через кнопку «Поделиться» ----------
+# ---------- Делегирование ----------
 @dp.callback_query(F.data == "delegate_reminder")
 async def delegate_start(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(ReminderForm.delegate_share)
+    logging.info(f"Пользователь {callback.from_user.id} начал делегирование")
     await callback.message.answer(
-        "👤 Нажмите кнопку ниже и выберите получателя:",
+        "👤 Нажмите кнопку ниже и выберите получателя из своих контактов:",
         reply_markup=share_contact_keyboard()
     )
     await callback.answer()
@@ -241,6 +242,7 @@ async def delegate_cancel(message: types.Message, state: FSMContext):
 async def delegate_user_shared(message: types.Message, state: FSMContext):
     user_shared = message.user_shared
     target_id = user_shared.user_id
+    logging.info(f"Выбран получатель: {target_id}")
     await state.update_data(target_id=target_id)
     await state.set_state(ReminderForm.delegate_text)
     await message.answer(
