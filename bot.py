@@ -112,9 +112,7 @@ async def get_user_free_slots(user_id):
         cur = await db.execute("SELECT free_slots, last_free_slot_used FROM users WHERE user_id=?", (user_id,))
         row = await cur.fetchone()
         if row and row[0] > 0:
-            if row[1] == date.today():
-                return 0
-            return row[0]
+            return 0 if row[1] == date.today() else row[0]
         return 0
 
 async def use_free_slot(user_id):
@@ -274,6 +272,17 @@ async def menu(call: types.CallbackQuery):
         await call.message.edit_text("🎲 <b>Главное меню</b>", parse_mode="HTML", reply_markup=main_menu_keyboard())
     await call.answer()
 
+@dp.callback_query(F.data=="help")
+async def help(call: types.CallbackQuery):
+    await call.message.edit_text("📌 <b>Как участвовать</b>\n\n1️⃣ Выбери лотерею.\n2️⃣ Займи слот.\n3️⃣ Оплати на карту.\n4️⃣ Нажми «Я оплатил».\n5️⃣ Жди результата!\n\n🔒 Честность проверяется через хеш.", parse_mode="HTML", reply_markup=back_btn())
+    await call.answer()
+
+@dp.callback_query(F.data=="show_commands")
+async def show_cmds(call: types.CallbackQuery):
+    await call.message.edit_text("📋 <b>Доступные команды</b>\n\n/start — Главное меню\n/ref — Реферальная ссылка\n/myid — Узнать свой Telegram ID", parse_mode="HTML", reply_markup=back_btn())
+    await call.answer()
+
+# ---------- АДМИН-ФУНКЦИИ ----------
 @dp.callback_query(F.data=="admin_create")
 async def admin_create(call: types.CallbackQuery, state: FSMContext):
     if call.from_user.id not in ADMIN_IDS:
@@ -316,6 +325,41 @@ async def slots(message: types.Message, state: FSMContext):
     await message.answer(f"✅ <b>Лотерея создана!</b>\n\n🎁 Приз: {data['prize_name']}\n💰 Цена слота: {data['slot_price']} ₽\n🎰 Слотов: {s}\n\n🔒 <b>Хеш:</b> <code>{h}</code>", parse_mode="HTML", reply_markup=admin_menu_keyboard())
     await state.clear()
 
+@dp.callback_query(F.data=="admin_list")
+async def admin_list(call: types.CallbackQuery):
+    if call.from_user.id not in ADMIN_IDS:
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    lots = await get_active_lotteries()
+    if not lots:
+        await call.message.edit_text("Нет активных лотерей.", reply_markup=admin_menu_keyboard())
+        await call.answer()
+        return
+    text = "📋 <b>Активные лотереи</b>\n\n"
+    for l in lots:
+        text += f"🆔 {l[0]} | {l[1]}\n💰 {l[2]}₽ | 🎰 {l[4]}/{l[3]} слотов\n\n"
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=admin_menu_keyboard())
+    await call.answer()
+
+@dp.callback_query(F.data=="admin_stats")
+async def admin_stats(call: types.CallbackQuery):
+    if call.from_user.id not in ADMIN_IDS:
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    async with aiosqlite.connect(DATABASE) as db:
+        cur = await db.execute("SELECT COUNT(*) FROM lotteries")
+        tl = (await cur.fetchone())[0]
+        cur = await db.execute("SELECT COUNT(*) FROM slots WHERE paid=1")
+        ts = (await cur.fetchone())[0]
+        cur = await db.execute("SELECT SUM(l.slot_price) FROM slots s JOIN lotteries l ON s.lottery_id=l.id WHERE s.paid=1")
+        tr = (await cur.fetchone())[0] or 0
+        com = int(tr * COMMISSION_PERCENT / 100)
+        cur = await db.execute("SELECT COUNT(*) FROM referrals")
+        refs = (await cur.fetchone())[0]
+    await call.message.edit_text(f"📊 <b>Статистика</b>\n\n🎰 Лотерей: {tl}\n🎲 Слотов: {ts}\n👥 Рефералов: {refs}\n💰 Оборот: {tr} ₽\n💎 Прибыль: {com} ₽", parse_mode="HTML", reply_markup=admin_menu_keyboard())
+    await call.answer()
+
+# ---------- ПОЛЬЗОВАТЕЛЬСКИЕ ФУНКЦИИ ----------
 @dp.callback_query(F.data=="list_lotteries")
 async def list_lotteries(call: types.CallbackQuery):
     if not await is_subscribed(call.from_user.id):
@@ -520,40 +564,38 @@ async def my_parts(call: types.CallbackQuery):
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
     await call.answer()
 
-@dp.callback_query(F.data=="help")
-async def help(call: types.CallbackQuery):
-    await call.message.edit_text("📌 <b>Как участвовать</b>\n\n1️⃣ Выбери лотерею.\n2️⃣ Займи слот.\n3️⃣ Оплати на карту.\n4️⃣ Нажми «Я оплатил».\n5️⃣ Жди результата!\n\n🔒 Честность проверяется через хеш.", parse_mode="HTML", reply_markup=back_btn())
-    await call.answer()
+# ---------- ВЕБ-СЕРВЕР ----------
+async def healthcheck(request):
+    return web.Response(text="OK")
 
-@dp.callback_query(F.data=="show_commands")
-async def show_cmds(call: types.CallbackQuery):
-    await call.message.edit_text("📋 <b>Доступные команды</b>\n\n/start — Главное меню\n/ref — Реферальная ссылка\n/myid — Узнать свой Telegram ID", parse_mode="HTML", reply_markup=back_btn())
-    await call.answer()
+async def run_web_server():
+    app = web.Application()
+    app.router.add_get("/", healthcheck)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    logging.info(f"Web server started on port {PORT}")
 
-@dp.callback_query(F.data=="admin_list")
-async def admin_list(call: types.CallbackQuery):
-    if call.from_user.id not in ADMIN_IDS:
-        await call.answer("⛔ Доступ запрещён", show_alert=True)
-        return
-    lots = await get_active_lotteries()
-    if not lots:
-        await call.message.edit_text("Нет активных лотерей.", reply_markup=admin_menu_keyboard())
-        await call.answer()
-        return
-    text = "📋 <b>Активные лотереи</b>\n\n"
-    for l in lots:
-        text += f"🆔 {l[0]} | {l[1]}\n💰 {l[2]}₽ | 🎰 {l[4]}/{l[3]} слотов\n\n"
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=admin_menu_keyboard())
-    await call.answer()
+async def self_ping(port):
+    await asyncio.sleep(30)
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"http://0.0.0.0:{port}/") as resp:
+                    logging.info(f"Self-ping: {resp.status}")
+        except Exception as e:
+            logging.warning(f"Self-ping failed: {e}")
+        await asyncio.sleep(300)
 
-@dp.callback_query(F.data=="admin_stats")
-async def admin_stats(call: types.CallbackQuery):
-    if call.from_user.id not in ADMIN_IDS:
-        await call.answer("⛔ Доступ запрещён", show_alert=True)
-        return
-    async with aiosqlite.connect(DATABASE) as db:
-        cur = await db.execute("SELECT COUNT(*) FROM lotteries")
-        tl = (await cur.fetchone())[0]
-        cur = await db.execute("SELECT COUNT(*) FROM slots WHERE paid=1")
-        ts = (await cur.fetchone())[0]
-        cur = await db.execute("SELECT SUM(l.slot_price) FROM slots s JOIN lotteries l ON s.l
+# ---------- ЗАПУСК ----------
+async def main():
+    await init_db()
+    asyncio.create_task(self_ping(PORT))
+    await asyncio.gather(
+        dp.start_polling(bot),
+        run_web_server()
+    )
+
+if __name__ == "__main__":
+    asyncio.run(main())
