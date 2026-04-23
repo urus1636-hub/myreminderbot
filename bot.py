@@ -19,7 +19,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiohttp import web
 
 # ========== НАСТРОЙКИ ==========
-BOT_TOKEN = "8568815241:AAEam_4F28Host-vnQ0pXVjcCzMldUtVACo"
+BOT_TOKEN = 8568815241:AAEam_4F28Host-vnQ0pXVjcCzMldUtVACo"
 CARD_NUMBER = "22022084264326435781"
 CHANNEL_ID = "@luckyfortune4"
 ADMIN_IDS = [1820245156]
@@ -48,6 +48,7 @@ class LotteryForm(StatesGroup):
     waiting_for_price = State()
     waiting_for_slots = State()
 
+# ---------- КЛАВИАТУРЫ ----------
 def main_menu_keyboard():
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="🎲 Смотреть активные лотереи", callback_data="list_lotteries"))
@@ -140,7 +141,7 @@ async def create_lottery(name, price, total):
 
 async def get_active_lotteries():
     async with aiosqlite.connect(DATABASE) as db:
-        cur = await db.execute("SELECT id, prize_name, slot_price, total_slots, taken_slots FROM lotteries WHERE status='active' ORDER BY id DESC")
+        cur = await db.execute("SELECT id, prize_name, slot_price, total_slots, taken_slots FROM lotteries WHERE status='active' AND taken_slots < total_slots ORDER BY id DESC")
         return await cur.fetchall()
 
 async def get_lottery(lid):
@@ -165,7 +166,10 @@ async def mark_slot_paid(sid):
         cur = await db.execute("SELECT lottery_id FROM slots WHERE id=?", (sid,))
         row = await cur.fetchone()
         if row:
-            await db.execute("UPDATE lotteries SET taken_slots=taken_slots+1 WHERE id=?", (row[0],))
+            lid = row[0]
+            cur = await db.execute("SELECT COUNT(*) FROM slots WHERE lottery_id=? AND paid=1", (lid,))
+            taken = (await cur.fetchone())[0]
+            await db.execute("UPDATE lotteries SET taken_slots=? WHERE id=?", (taken, lid))
         await db.commit()
 
 async def get_user_parts(uid):
@@ -519,8 +523,8 @@ async def appr(call: types.CallbackQuery):
         uid, uname, lid, prize, amt = info
         try:
             await bot.send_message(uid, f"✅ Твоя оплата за слот в лотерее «{prize}» подтверждена!\n🎲 Слот успешно активирован. Жди завершения розыгрыша!")
-        except:
-            pass
+        except Exception as e:
+            logging.error(f"Ошибка отправки уведомления {uid}: {e}")
         if await is_full(lid):
             await finish_lottery(lid)
     await call.message.edit_text(f"✅ Оплата слота #{sid} подтверждена!")
