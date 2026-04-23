@@ -47,57 +47,25 @@ class LotteryForm(StatesGroup):
     waiting_for_prize = State()
     waiting_for_price = State()
     waiting_for_slots = State()
-    # Для редактирования
-    edit_what = State()
     edit_value = State()
 
 # ---------- КЛАВИАТУРЫ ----------
 def main_menu_keyboard():
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(
-        text="🎲 Посмотреть активные лотереи и занять слот",
-        callback_data="list_lotteries"
-    ))
-    builder.row(InlineKeyboardButton(
-        text="📊 Мои участия, выигрыши и шансы",
-        callback_data="my_participations"
-    ))
-    builder.row(InlineKeyboardButton(
-        text="👥 Пригласить друзей и получить бонус",
-        callback_data="ref_info"
-    ))
-    builder.row(InlineKeyboardButton(
-        text="📋 Список всех команд бота",
-        callback_data="show_commands"
-    ))
-    builder.row(InlineKeyboardButton(
-        text="❓ Подробнее о боте и проверке честности",
-        callback_data="help"
-    ))
+    builder.row(InlineKeyboardButton(text="🎲 Посмотреть активные лотереи и занять слот", callback_data="list_lotteries"))
+    builder.row(InlineKeyboardButton(text="📊 Мои участия, выигрыши и шансы", callback_data="my_participations"))
+    builder.row(InlineKeyboardButton(text="👥 Пригласить друзей и получить бонус", callback_data="ref_info"))
+    builder.row(InlineKeyboardButton(text="📋 Список всех команд бота", callback_data="show_commands"))
+    builder.row(InlineKeyboardButton(text="❓ Подробнее о боте и проверке честности", callback_data="help"))
     return builder.as_markup()
 
 def admin_menu_keyboard():
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(
-        text="➕ Создать новую лотерею",
-        callback_data="admin_create"
-    ))
-    builder.row(InlineKeyboardButton(
-        text="📋 Управление активными лотереями",
-        callback_data="admin_list"
-    ))
-    builder.row(InlineKeyboardButton(
-        text="📊 Посмотреть статистику и прибыль",
-        callback_data="admin_stats"
-    ))
-    builder.row(InlineKeyboardButton(
-        text="👥 Моя реферальная ссылка",
-        callback_data="ref_info"
-    ))
-    builder.row(InlineKeyboardButton(
-        text="🔙 Вернуться в главное меню",
-        callback_data="main_menu"
-    ))
+    builder.row(InlineKeyboardButton(text="➕ Создать новую лотерею", callback_data="admin_create"))
+    builder.row(InlineKeyboardButton(text="📋 Управление всеми лотереями", callback_data="admin_list"))
+    builder.row(InlineKeyboardButton(text="📊 Статистика и прибыль", callback_data="admin_stats"))
+    builder.row(InlineKeyboardButton(text="👥 Моя реферальная ссылка", callback_data="ref_info"))
+    builder.row(InlineKeyboardButton(text="🔙 Вернуться в главное меню", callback_data="main_menu"))
     return builder.as_markup()
 
 def back_btn():
@@ -107,14 +75,8 @@ def back_btn():
 
 def subscribe_keyboard():
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(
-        text="📢 Перейти на канал @luckyfortune4",
-        url="https://t.me/luckyfortune4"
-    ))
-    builder.row(InlineKeyboardButton(
-        text="✅ Я подписался, проверить доступ",
-        callback_data="check_subscription"
-    ))
+    builder.row(InlineKeyboardButton(text="📢 Перейти на канал @luckyfortune4", url="https://t.me/luckyfortune4"))
+    builder.row(InlineKeyboardButton(text="✅ Я подписался, проверить доступ", callback_data="check_subscription"))
     return builder.as_markup()
 
 async def is_subscribed(user_id):
@@ -180,7 +142,7 @@ async def create_lottery(name, price, total):
 
 async def get_active_lotteries():
     async with aiosqlite.connect(DATABASE) as db:
-        cur = await db.execute("SELECT id, prize_name, slot_price, total_slots, taken_slots FROM lotteries WHERE status='active' ORDER BY id DESC")
+        cur = await db.execute("SELECT id, prize_name, slot_price, total_slots, taken_slots FROM lotteries WHERE status='active' AND taken_slots < total_slots ORDER BY id DESC")
         return await cur.fetchall()
 
 async def get_all_lotteries():
@@ -285,55 +247,18 @@ async def start(message: types.Message):
     await save_user(message.from_user.id, message.from_user.username, message.from_user.first_name, ref)
     if await is_subscribed(message.from_user.id):
         if message.from_user.id in ADMIN_IDS:
-            await message.answer(
-                "👑 <b>Админ-панель Lucky Fortune</b>\n\n"
-                "Добро пожаловать, Босс! Здесь ты можешь создавать и управлять лотереями, "
-                "смотреть статистику и следить за прибылью.\n\n"
-                "Используй кнопки ниже для навигации.",
-                parse_mode="HTML",
-                reply_markup=admin_menu_keyboard()
-            )
+            await message.answer("👑 <b>Админ-панель Lucky Fortune</b>\n\nДобро пожаловать, Босс!", parse_mode="HTML", reply_markup=admin_menu_keyboard())
         else:
-            await message.answer(
-                "🎲 <b>Добро пожаловать в Lucky Fortune!</b>\n\n"
-                "Это бот для честных розыгрышей призов. Ты можешь участвовать в лотереях, "
-                "занимать слоты и выигрывать крутые призы!\n\n"
-                "🔥 <b>Как это работает:</b>\n"
-                "1. Выбираешь активную лотерею\n"
-                "2. Занимаешь один или несколько слотов\n"
-                "3. Оплачиваешь переводом на карту\n"
-                "4. Ждёшь, пока все слоты заполнятся\n"
-                "5. Бот случайно выбирает победителя\n\n"
-                "🔒 <b>Честность гарантирована!</b> Перед розыгрышем бот публикует хеш-код, "
-                "а после — секретный ключ. Ты можешь сам проверить результат на сайте SHA256.\n\n"
-                "👥 Приглашай друзей по реферальной ссылке и получай бесплатные слоты!",
-                parse_mode="HTML",
-                reply_markup=main_menu_keyboard()
-            )
+            await message.answer("🎲 <b>Добро пожаловать в Lucky Fortune!</b>\n\nЭто бот для честных розыгрышей призов.\nВыбирай лотерею, занимай слот и выигрывай!", parse_mode="HTML", reply_markup=main_menu_keyboard())
     else:
-        await message.answer(
-            "📢 <b>Чтобы пользоваться ботом, нужно подписаться на наш канал!</b>\n\n"
-            "Там публикуются новости, победители и эксклюзивные розыгрыши.",
-            parse_mode="HTML",
-            reply_markup=subscribe_keyboard()
-        )
+        await message.answer("📢 <b>Чтобы пользоваться ботом, нужно подписаться на наш канал!</b>", parse_mode="HTML", reply_markup=subscribe_keyboard())
 
 @dp.callback_query(F.data=="check_subscription")
 async def check_sub(call: types.CallbackQuery):
     if await is_subscribed(call.from_user.id):
-        await call.message.edit_text(
-            "✅ <b>Спасибо за подписку!</b>\n\n"
-            "Теперь ты можешь пользоваться ботом. Удачи в розыгрышах! 🍀",
-            parse_mode="HTML",
-            reply_markup=main_menu_keyboard()
-        )
+        await call.message.answer("✅ <b>Спасибо за подписку!</b>\n\nТеперь ты можешь пользоваться ботом. 🍀", parse_mode="HTML", reply_markup=main_menu_keyboard())
+        await call.message.delete()
     else:
-        await call.message.edit_text(
-            "❌ <b>Ты ещё не подписался!</b>\n\n"
-            "Подпишись на @luckyfortune4 и нажми кнопку проверки снова.",
-            parse_mode="HTML",
-            reply_markup=subscribe_keyboard()
-        )
         await call.answer("❌ Ты ещё не подписался!", show_alert=True)
 
 @dp.message(Command("ref"))
@@ -346,16 +271,7 @@ async def ref(message: types.Message):
     free = await get_user_free_slots(uid)
     uname = (await bot.me()).username
     link = f"https://t.me/{uname}?start={uid}"
-    await message.answer(
-        f"🔗 <b>Твоя реферальная ссылка</b>\n"
-        f"<code>{link}</code>\n\n"
-        f"👥 Приглашено друзей: {cnt}/{REFERRAL_BONUS}\n"
-        f"🎁 Бесплатных слотов доступно: {free}\n"
-        f"⚠️ Лимит: 1 бесплатный слот в сутки.\n\n"
-        f"Отправь эту ссылку другу. Когда он запустит бота — ты получишь +1 к счётчику. "
-        f"Как только наберётся {REFERRAL_BONUS} друзей, ты получишь бесплатный слот!",
-        parse_mode="HTML"
-    )
+    await message.answer(f"🔗 <b>Твоя реферальная ссылка</b>\n<code>{link}</code>\n\n👥 Приглашено: {cnt}/{REFERRAL_BONUS}\n🎁 Бесплатных слотов: {free}\n⚠️ Лимит: 1 слот в сутки.", parse_mode="HTML")
 
 @dp.callback_query(F.data=="ref_info")
 async def ref_info(call: types.CallbackQuery):
@@ -367,15 +283,7 @@ async def ref_info(call: types.CallbackQuery):
     free = await get_user_free_slots(uid)
     uname = (await bot.me()).username
     link = f"https://t.me/{uname}?start={uid}"
-    await call.message.edit_text(
-        f"🔗 <b>Твоя реферальная ссылка</b>\n"
-        f"<code>{link}</code>\n\n"
-        f"👥 Приглашено: {cnt}/{REFERRAL_BONUS}\n"
-        f"🎁 Бесплатных слотов: {free}\n"
-        f"⚠️ Лимит: 1 слот в сутки.",
-        parse_mode="HTML",
-        reply_markup=back_btn()
-    )
+    await call.message.edit_text(f"🔗 <b>Твоя реферальная ссылка</b>\n<code>{link}</code>\n\n👥 Приглашено: {cnt}/{REFERRAL_BONUS}\n🎁 Бесплатных слотов: {free}\n⚠️ Лимит: 1 слот в сутки.", parse_mode="HTML", reply_markup=back_btn())
     await call.answer()
 
 @dp.callback_query(F.data=="main_menu")
@@ -392,37 +300,12 @@ async def menu(call: types.CallbackQuery):
 
 @dp.callback_query(F.data=="help")
 async def help(call: types.CallbackQuery):
-    await call.message.edit_text(
-        "📌 <b>Как участвовать в розыгрышах</b>\n\n"
-        "1️⃣ Нажми «Посмотреть активные лотереи»\n"
-        "2️⃣ Выбери интересную лотерею\n"
-        "3️⃣ Нажми «Занять слот» (можно занять несколько!)\n"
-        "4️⃣ Оплати переводом на карту, указанную в сообщении\n"
-        "5️⃣ Нажми «Я оплатил» и дождись подтверждения админа\n"
-        "6️⃣ Когда все слоты заняты — бот выбирает победителя\n\n"
-        "🎁 Победитель получает приз!\n\n"
-        "🔒 <b>Как проверить честность:</b>\n"
-        "Перед началом розыгрыша бот публикует хеш-код. После завершения лотереи "
-        "бот раскрывает секретный ключ. Ты можешь зайти на сайт "
-        "emn178.github.io/online-tools/sha256.html, вставить ключ и сравнить результат с хешем. "
-        "Если совпадает — всё честно!\n\n"
-        "👥 <b>Реферальная система:</b>\n"
-        f"Пригласи {REFERRAL_BONUS} друзей по своей ссылке и получи 1 бесплатный слот (лимит: 1 в сутки).",
-        parse_mode="HTML",
-        reply_markup=back_btn()
-    )
+    await call.message.edit_text("📌 <b>Как участвовать</b>\n\n1️⃣ Выбери лотерею.\n2️⃣ Займи слот.\n3️⃣ Оплати на карту.\n4️⃣ Нажми «Я оплатил».\n5️⃣ Жди результата!\n\n🔒 Честность проверяется через хеш.", parse_mode="HTML", reply_markup=back_btn())
     await call.answer()
 
 @dp.callback_query(F.data=="show_commands")
 async def show_cmds(call: types.CallbackQuery):
-    await call.message.edit_text(
-        "📋 <b>Доступные команды</b>\n\n"
-        "/start — Главное меню и приветствие\n"
-        "/ref — Твоя реферальная ссылка\n"
-        "/myid — Узнать свой Telegram ID",
-        parse_mode="HTML",
-        reply_markup=back_btn()
-    )
+    await call.message.edit_text("📋 <b>Доступные команды</b>\n\n/start — Главное меню\n/ref — Реферальная ссылка\n/myid — Узнать свой Telegram ID", parse_mode="HTML", reply_markup=back_btn())
     await call.answer()
 
 # ---------- АДМИН-ФУНКЦИИ ----------
@@ -432,19 +315,14 @@ async def admin_create(call: types.CallbackQuery, state: FSMContext):
         await call.answer("⛔ Доступ запрещён", show_alert=True)
         return
     await state.set_state(LotteryForm.waiting_for_prize)
-    await call.message.edit_text(
-        "🎁 <b>Создание новой лотереи</b>\n\n"
-        "Введите название приза (например, «Discord Nitro 1 месяц»):",
-        parse_mode="HTML",
-        reply_markup=back_btn()
-    )
+    await call.message.edit_text("🎁 <b>Создание новой лотереи</b>\n\nВведите название приза:", parse_mode="HTML", reply_markup=back_btn())
     await call.answer()
 
 @dp.message(LotteryForm.waiting_for_prize)
 async def prize(message: types.Message, state: FSMContext):
     await state.update_data(prize_name=message.text.strip())
     await state.set_state(LotteryForm.waiting_for_price)
-    await message.answer("💰 Введите цену одного слота в рублях:", reply_markup=back_btn())
+    await message.answer("💰 Введите цену слота в рублях:", reply_markup=back_btn())
 
 @dp.message(LotteryForm.waiting_for_price)
 async def price(message: types.Message, state: FSMContext):
@@ -457,7 +335,7 @@ async def price(message: types.Message, state: FSMContext):
         return
     await state.update_data(slot_price=p)
     await state.set_state(LotteryForm.waiting_for_slots)
-    await message.answer("🎰 Введите общее количество слотов:", reply_markup=back_btn())
+    await message.answer("🎰 Введите количество слотов:", reply_markup=back_btn())
 
 @dp.message(LotteryForm.waiting_for_slots)
 async def slots(message: types.Message, state: FSMContext):
@@ -470,16 +348,7 @@ async def slots(message: types.Message, state: FSMContext):
         return
     data = await state.get_data()
     lid, seed, h = await create_lottery(data["prize_name"], data["slot_price"], s)
-    await message.answer(
-        f"✅ <b>Лотерея создана!</b>\n\n"
-        f"🎁 Приз: {data['prize_name']}\n"
-        f"💰 Цена слота: {data['slot_price']} ₽\n"
-        f"🎰 Всего слотов: {s}\n"
-        f"🆔 ID: {lid}\n\n"
-        f"🔒 <b>Хеш для проверки честности:</b> <code>{h}</code>",
-        parse_mode="HTML",
-        reply_markup=admin_menu_keyboard()
-    )
+    await message.answer(f"✅ <b>Лотерея создана!</b>\n\n🎁 Приз: {data['prize_name']}\n💰 Цена слота: {data['slot_price']} ₽\n🎰 Слотов: {s}\n\n🔒 <b>Хеш:</b> <code>{h}</code>", parse_mode="HTML", reply_markup=admin_menu_keyboard())
     await state.clear()
 
 @dp.callback_query(F.data=="admin_list")
@@ -494,17 +363,10 @@ async def admin_list(call: types.CallbackQuery):
         return
     builder = InlineKeyboardBuilder()
     for l in lots:
-        status = "🟢" if l[5]=='active' else "🔴" if l[5]=='finished' else "🟡"
-        builder.row(InlineKeyboardButton(
-            text=f"{status} {l[1]} | {l[2]}₽ | {l[4]}/{l[3]}",
-            callback_data=f"admview_{l[0]}"
-        ))
+        status = "🟢" if l[5]=='active' else "🔴"
+        builder.row(InlineKeyboardButton(text=f"{status} {l[1]} | {l[2]}₽ | {l[4]}/{l[3]}", callback_data=f"admview_{l[0]}"))
     builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu"))
-    await call.message.edit_text(
-        "📋 <b>Все лотереи</b>\n\nВыбери лотерею для управления:",
-        parse_mode="HTML",
-        reply_markup=builder.as_markup()
-    )
+    await call.message.edit_text("📋 <b>Все лотереи</b>\n\nВыбери для управления:", parse_mode="HTML", reply_markup=builder.as_markup())
     await call.answer()
 
 @dp.callback_query(F.data.startswith("admview_"))
@@ -524,15 +386,9 @@ async def admview(call: types.CallbackQuery):
         for sn, uid, un in slots:
             text += f"🎲 Слот #{sn}: @{un or uid}\n"
     builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="✏️ Название", callback_data=f"edit_name_{lid}"),
-        InlineKeyboardButton(text="💰 Цену", callback_data=f"edit_price_{lid}")
-    )
-    builder.row(
-        InlineKeyboardButton(text="🎰 Кол-во", callback_data=f"edit_total_{lid}"),
-        InlineKeyboardButton(text="👥 Участники", callback_data=f"parts_{lid}")
-    )
-    builder.row(InlineKeyboardButton(text="❌ Удалить лотерею", callback_data=f"delete_{lid}"))
+    builder.row(InlineKeyboardButton(text="✏️ Название", callback_data=f"edit_name_{lid}"), InlineKeyboardButton(text="💰 Цену", callback_data=f"edit_price_{lid}"))
+    builder.row(InlineKeyboardButton(text="🎰 Кол-во", callback_data=f"edit_total_{lid}"), InlineKeyboardButton(text="👥 Участники", callback_data=f"parts_{lid}"))
+    builder.row(InlineKeyboardButton(text="❌ Удалить", callback_data=f"delete_{lid}"))
     builder.row(InlineKeyboardButton(text="🔙 К списку", callback_data="admin_list"))
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
     await call.answer()
@@ -543,18 +399,12 @@ async def edit_start(call: types.CallbackQuery, state: FSMContext):
         await call.answer("⛔ Доступ запрещён", show_alert=True)
         return
     parts = call.data.split("_")
-    if len(parts) < 3:
-        await call.answer("Неверная команда", show_alert=True)
-        return
     field = parts[1]
     lid = int(parts[2])
-    field_names = {"name": "название приза", "price": "цену слота (в рублях)", "total": "количество слотов"}
+    names = {"name": "название приза", "price": "цену слота (в рублях)", "total": "количество слотов"}
     await state.update_data(edit_lid=lid, edit_field=field)
     await state.set_state(LotteryForm.edit_value)
-    await call.message.edit_text(
-        f"✏️ Введите новое значение для поля «{field_names.get(field, field)}»:",
-        reply_markup=back_btn()
-    )
+    await call.message.edit_text(f"✏️ Введите новое значение для поля «{names.get(field, field)}»:", reply_markup=back_btn())
     await call.answer()
 
 @dp.message(LotteryForm.edit_value)
@@ -598,16 +448,7 @@ async def admin_stats(call: types.CallbackQuery):
         com = int(tr * COMMISSION_PERCENT / 100)
         cur = await db.execute("SELECT COUNT(*) FROM referrals")
         refs = (await cur.fetchone())[0]
-    await call.message.edit_text(
-        f"📊 <b>Статистика бота</b>\n\n"
-        f"🎰 Всего лотерей создано: {tl}\n"
-        f"🎲 Всего оплаченных слотов: {ts}\n"
-        f"👥 Пользователей по рефералкам: {refs}\n"
-        f"💰 Общий оборот: {tr} ₽\n"
-        f"💎 Твоя прибыль ({COMMISSION_PERCENT}%): {com} ₽",
-        parse_mode="HTML",
-        reply_markup=admin_menu_keyboard()
-    )
+    await call.message.edit_text(f"📊 <b>Статистика</b>\n\n🎰 Лотерей: {tl}\n🎲 Слотов: {ts}\n👥 Рефералов: {refs}\n💰 Оборот: {tr} ₽\n💎 Прибыль: {com} ₽", parse_mode="HTML", reply_markup=admin_menu_keyboard())
     await call.answer()
 
 # ---------- ПОЛЬЗОВАТЕЛЬСКИЕ ФУНКЦИИ ----------
@@ -618,22 +459,15 @@ async def list_lotteries(call: types.CallbackQuery):
         return
     lots = await get_active_lotteries()
     if not lots:
-        await call.message.edit_text("😕 Пока нет активных лотерей. Загляни позже!", reply_markup=main_menu_keyboard())
+        await call.message.answer("😕 Пока нет активных лотерей.", reply_markup=main_menu_keyboard())
+        await call.message.delete()
         await call.answer()
         return
     builder = InlineKeyboardBuilder()
     for l in lots:
-        builder.row(InlineKeyboardButton(
-            text=f"🎁 {l[1]} | {l[2]}₽ | {l[4]}/{l[3]} слотов",
-            callback_data=f"view_{l[0]}"
-        ))
+        builder.row(InlineKeyboardButton(text=f"🎁 {l[1]} | {l[2]}₽ | {l[4]}/{l[3]} слотов", callback_data=f"view_{l[0]}"))
     builder.row(InlineKeyboardButton(text="🔙 Вернуться в меню", callback_data="main_menu"))
-    await call.message.edit_text(
-        "🎲 <b>Активные лотереи</b>\n\n"
-        "Выбери лотерею, чтобы посмотреть детали, участников и свои шансы!",
-        parse_mode="HTML",
-        reply_markup=builder.as_markup()
-    )
+    await call.message.edit_text("🎲 <b>Активные лотереи</b>\n\nВыбери, чтобы посмотреть детали и свои шансы!", parse_mode="HTML", reply_markup=builder.as_markup())
     await call.answer()
 
 @dp.callback_query(F.data.startswith("view_"))
@@ -657,17 +491,15 @@ async def view_lottery(call: types.CallbackQuery):
         cur = await db.execute("SELECT COUNT(*) FROM slots WHERE lottery_id=? AND user_id=? AND paid=1", (lid, call.from_user.id))
         my = (await cur.fetchone())[0]
     if l[5]=='active' and l[4]>0 and my>0:
-        text += f"\n🍀 <b>Твой шанс на победу:</b> {my/l[4]*100:.1f}% (у тебя {my} слотов)"
-    elif l[5]=='active' and l[4]>0:
-        text += f"\n⚠️ У тебя пока нет слотов в этой лотерее. Шанс: 0%"
+        text += f"\n🍀 <b>Твой шанс:</b> {my/l[4]*100:.1f}% ({my} слотов)"
     builder = InlineKeyboardBuilder()
     if l[5]=='active' and l[4]<l[3]:
         builder.row(InlineKeyboardButton(text="🎲 Занять слот", callback_data=f"take_{lid}"))
     elif l[5]=='finished' and l[6]:
         wname = slots[0][2] if slots else f"ID:{l[6]}"
         text += f"\n\n🏆 <b>Победитель:</b> @{wname}"
-        builder.row(InlineKeyboardButton(text="📋 Список всех участников", callback_data=f"parts_{lid}"))
-    builder.row(InlineKeyboardButton(text="🔙 К списку лотерей", callback_data="list_lotteries"))
+        builder.row(InlineKeyboardButton(text="📋 Все участники", callback_data=f"parts_{lid}"))
+    builder.row(InlineKeyboardButton(text="🔙 К списку", callback_data="list_lotteries"))
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
     await call.answer()
 
@@ -676,9 +508,15 @@ async def parts(call: types.CallbackQuery):
     lid = int(call.data.split("_")[1])
     slots = await get_lottery_slots(lid)
     l = await get_lottery(lid)
+    if not l:
+        await call.answer("Лотерея не найдена", show_alert=True)
+        return
     t = f"📋 <b>Участники лотереи «{l[1]}»</b>\n\n"
-    for sn, uid, un in slots:
-        t += f"🎲 Слот #{sn}: @{un or uid}\n"
+    if slots:
+        for sn, uid, un in slots:
+            t += f"🎲 Слот #{sn}: @{un or uid}\n"
+    else:
+        t += "Нет участников.\n"
     if l[6]:
         w = slots[0][2] if slots else f"ID:{l[6]}"
         t += f"\n🏆 <b>Победитель:</b> @{w}"
@@ -711,12 +549,7 @@ async def take(call: types.CallbackQuery):
         if await use_free_slot(uid):
             sid = await add_slot(lid, uid, un, sn)
             await mark_slot_paid(sid)
-            await call.message.edit_text(
-                f"🎉 <b>Бесплатный слот использован!</b>\n\n"
-                f"Лотерея: «{l[1]}»\n🎲 Слот #{sn} активирован.\nЖди завершения розыгрыша!",
-                parse_mode="HTML",
-                reply_markup=main_menu_keyboard()
-            )
+            await call.message.edit_text(f"🎉 <b>Бесплатный слот использован!</b>\n\nЛотерея: «{l[1]}»\n🎲 Слот #{sn} активирован.", parse_mode="HTML", reply_markup=main_menu_keyboard())
             await call.answer("✅ Бесплатный слот!", show_alert=True)
             if await is_full(lid):
                 await finish_lottery(lid)
@@ -726,12 +559,7 @@ async def take(call: types.CallbackQuery):
             return
     sid = await add_slot(lid, uid, un, sn)
     amt = l[2]
-    txt = (
-        f"💳 <b>Оплата слота #{sn}</b>\n\n"
-        f"🏦 <b>Перевод на карту:</b> <code>{CARD_NUMBER}</code>\n"
-        f"💰 <b>Сумма к оплате:</b> {amt} ₽\n\n"
-        f"После перевода нажми кнопку «Я оплатил». Админ проверит и подтвердит слот."
-    )
+    txt = f"💳 <b>Оплата слота #{sn}</b>\n\n🏦 <b>Перевод на карту:</b> <code>{CARD_NUMBER}</code>\n💰 <b>Сумма:</b> {amt} ₽\n\n👇 После перевода нажми «Я оплатил».\nАдмин проверит и подтвердит слот."
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"pay_{sid}"))
     builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data=f"view_{lid}"))
@@ -752,7 +580,7 @@ async def finish_lottery(lid):
         "1. Зайди на сайт emn178.github.io/online-tools/sha256.html\n"
         "2. В поле «Input» вставь секретный ключ\n"
         "3. Настройки: UTF-8, Hex (Lower Case)\n"
-        "4. Сравни «Output» с публичным хешем, который был объявлен ранее"
+        "4. Сравни «Output» с публичным хешем"
     )
     async with aiosqlite.connect(DATABASE) as db:
         cur = await db.execute("SELECT DISTINCT user_id FROM slots WHERE lottery_id=? AND paid=1", (lid,))
@@ -761,37 +589,14 @@ async def finish_lottery(lid):
                 builder = InlineKeyboardBuilder()
                 builder.row(InlineKeyboardButton(text="📋 Посмотреть всех участников", callback_data=f"parts_{lid}"))
                 builder.row(InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu"))
-                await bot.send_message(
-                    uid,
-                    f"🎉 <b>Лотерея «{l[1]}» завершена!</b>\n\n"
-                    f"🏆 Победитель: {wdisp}\n"
-                    f"🎁 Приз: {l[1]}\n\n"
-                    f"{vinstr}\n\n"
-                    f"🔒 <b>Публичный хеш:</b> <code>{h}</code>\n"
-                    f"🔑 <b>Секретный ключ:</b> <code>{seed}</code>",
-                    parse_mode="HTML",
-                    reply_markup=builder.as_markup()
-                )
+                await bot.send_message(uid, f"🎉 <b>Лотерея «{l[1]}» завершена!</b>\n\n🏆 Победитель: {wdisp}\n🎁 Приз: {l[1]}\n\n{vinstr}\n\n🔒 <b>Хеш:</b> <code>{h}</code>\n🔑 <b>Ключ:</b> <code>{seed}</code>", parse_mode="HTML", reply_markup=builder.as_markup())
             except:
                 pass
     try:
-        await bot.send_message(
-            wid,
-            f"🏆 <b>Поздравляем, ты победил!</b>\n\n"
-            f"🎁 Твой приз: {l[1]}\n\n"
-            f"📩 Чтобы получить приз, напиши админу: @fourwayeu\n"
-            f"Укажи ID лотереи: {lid}",
-            parse_mode="HTML"
-        )
+        await bot.send_message(wid, f"🏆 <b>Поздравляем, ты победил!</b>\n\n🎁 Приз: {l[1]}\n\n📩 Чтобы получить приз, напиши админу: @fourwayeu\nУкажи ID лотереи: {lid}", parse_mode="HTML")
     except:
         pass
-    await notify_admin(
-        f"🏆 <b>Лотерея «{l[1]}» завершена!</b>\n\n"
-        f"<b>Участники:</b>\n{parts_text}\n\n"
-        f"<b>Победитель:</b> {wdisp}\n"
-        f"<b>Ключ:</b> {seed}\n"
-        f"<b>Хеш:</b> {h}"
-    )
+    await notify_admin(f"🏆 <b>Лотерея «{l[1]}» завершена!</b>\n\n<b>Участники:</b>\n{parts_text}\n\n<b>Победитель:</b> {wdisp}\n<b>Ключ:</b> {seed}\n<b>Хеш:</b> {h}")
 
 @dp.callback_query(F.data.startswith("pay_"))
 async def pay(call: types.CallbackQuery):
@@ -803,21 +608,8 @@ async def pay(call: types.CallbackQuery):
         builder = InlineKeyboardBuilder()
         builder.row(InlineKeyboardButton(text="✅ Подтвердить оплату", callback_data=f"appr_{sid}"))
         builder.row(InlineKeyboardButton(text="❌ Отклонить", callback_data=f"rej_{sid}"))
-        await notify_admin(
-            f"🔔 <b>Новая оплата ожидает подтверждения!</b>\n\n"
-            f"👤 Пользователь: {udisp}\n"
-            f"🎁 Лотерея: {prize}\n"
-            f"💰 Сумма: {amt} ₽\n"
-            f"🆔 ID слота: {sid}\n"
-            f"💳 Карта: <code>{CARD_NUMBER}</code>\n\n"
-            f"Проверь поступление в банке и нажми кнопку.",
-            builder.as_markup()
-        )
-    await call.message.edit_text(
-        "⏳ Запрос на подтверждение оплаты отправлен админу.\n"
-        "Как только админ подтвердит, твой слот будет активирован!",
-        reply_markup=main_menu_keyboard()
-    )
+        await notify_admin(f"🔔 <b>Новая оплата ожидает подтверждения!</b>\n\n👤 Пользователь: {udisp}\n🎁 Лотерея: {prize}\n💰 Сумма: {amt} ₽\n🆔 ID слота: {sid}\n💳 Карта: <code>{CARD_NUMBER}</code>\n\nПроверь поступление в банке и нажми кнопку.", builder.as_markup())
+    await call.message.edit_text("⏳ Запрос на подтверждение оплаты отправлен админу.\nКак только админ подтвердит, твой слот будет активирован!", reply_markup=main_menu_keyboard())
     await call.answer("✅ Запрос отправлен! Ожидай подтверждения.", show_alert=True)
 
 @dp.callback_query(F.data.startswith("appr_"))
@@ -865,10 +657,10 @@ async def my_parts(call: types.CallbackQuery):
         return
     parts = await get_user_parts(call.from_user.id)
     if not parts:
-        await call.message.edit_text("😕 Ты пока не участвовал в лотереях. Самое время начать!", reply_markup=main_menu_keyboard())
+        await call.message.edit_text("😕 Ты пока не участвовал в лотереях.", reply_markup=main_menu_keyboard())
         await call.answer()
         return
-    text = "📊 <b>Твои участия в лотереях</b>\n\n"
+    text = "📊 <b>Твои участия</b>\n\n"
     for lid, prize, sn, status, wid in parts:
         emoji = "🏆" if status=='finished' and wid==call.from_user.id else "⏳" if status=='active' else "✅"
         text += f"{emoji} {prize} — Слот #{sn}\n"
