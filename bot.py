@@ -19,7 +19,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiohttp import web
 
 # ========== НАСТРОЙКИ ==========
-BOT_TOKEN = 8568815241:AAEam_4F28Host-vnQ0pXVjcCzMldUtVACo"
+BOT_TOKEN = "8568815241:AAEam_4F28Host-vnQ0pXVjcCzMldUtVACo"
 CARD_NUMBER = "22022084264326435781"
 CHANNEL_ID = "@luckyfortune4"
 ADMIN_IDS = [1820245156]
