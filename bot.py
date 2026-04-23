@@ -763,4 +763,257 @@ async def take_slot(callback: types.CallbackQuery):
         await callback.answer("❌ Нет свободных слотов", show_alert=True)
         return
 
-    # Провер
+    # Проверяем бесплатные слоты (только если ещё не использовал сегодня)
+    free_slots = await get_user_free_slots(user_id)
+    if free_slots > 0:
+        if await use_free_slot(user_id):
+            slot_id = await add_slot(lottery_id, user_id, username, slot_number)
+            await mark_slot_paid(slot_id)
+            await callback.message.edit_text(
+                f"🎉 <b>Ты использовал бесплатный слот!</b>\n\n"
+                f"Лотерея: «{lottery[1]}»\n"
+                f"🎲 Слот #{slot_number} активирован.\n"
+                f"Жди завершения розыгрыша!",
+                parse_mode="HTML",
+                reply_markup=main_menu_keyboard()
+            )
+            await callback.answer("✅ Бесплатный слот использован!", show_alert=True)
+
+            if await check_lottery_full(lottery_id):
+                await finish_lottery(lottery_id)
+            return
+        else:
+            await callback.answer("❌ Лимит бесплатных слотов на сегодня исчерпан.", show_alert=True)
+            return
+
+    # Платный слот
+    slot_id = await add_slot(lottery_id, user_id, username, slot_number)
+    amount = lottery[2]
+    payment_text = (
+        f"💳 <b>Оплата слота #{slot_number}</b>\n\n"
+        f"🏦 <b>Перевод на карту:</b> <code>{CARD_NUMBER}</code>\n"
+        f"💰 <b>Сумма к оплате:</b> {amount} ₽\n\n"
+        f"👇 После перевода нажми кнопку «Я оплатил».\n"
+        f"Админ проверит и подтвердит слот."
+    )
+
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"confirm_payment_{slot_id}"))
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data=f"view_lottery_{lottery_id}"))
+
+    await callback.message.edit_text(payment_text, parse_mode="HTML", reply_markup=builder.as_markup())
+    await callback.answer()
+
+async def finish_lottery(lottery_id: int):
+    winner_id, winner_username, secret_seed = await pick_winner(lottery_id)
+    if not winner_id:
+        return
+
+    lottery = await get_lottery(lottery_id)
+    public_hash = lottery[8]
+    slots = await get_lottery_slots(lottery_id)
+    participants_text = "\n".join([f"Слот #{snum}: @{uname or uid}" for snum, uid, uname in slots])
+    winner_display = f"@{winner_username}" if winner_username else f"ID: {winner_id}"
+
+    verify_instruction = (
+        "🔑 <b>Как проверить честность:</b>\n"
+        "1. Зайди на сайт emn178.github.io/online-tools/sha256.html\n"
+        "2. В поле «Input» вставь секретный ключ ниже.\n"
+        "3. Настройки оставь по умолчанию (UTF-8, Hex).\n"
+        "4. Сравни «Output» с публичным хешем, который был объявлен до розыгрыша."
+    )
+
+    async with aiosqlite.connect(DATABASE) as db:
+        cursor = await db.execute("SELECT DISTINCT user_id FROM slots WHERE lottery_id = ? AND paid = 1", (lottery_id,))
+        participants = await cursor.fetchall()
+
+    for (uid,) in participants:
+        try:
+            builder = InlineKeyboardBuilder()
+            builder.row(InlineKeyboardButton(
+                text="📋 Посмотреть список участников",
+                callback_data=f"participants_{lottery_id}"
+            ))
+            builder.row(InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu"))
+
+            await bot.send_message(
+                uid,
+                f"🎉 <b>Лотерея «{lottery[1]}» завершена!</b>\n\n"
+                f"🏆 Победитель: {winner_display}\n"
+                f"🎁 Приз: {lottery[1]}\n\n"
+                f"{verify_instruction}\n\n"
+                f"🔒 <b>Публичный хеш:</b> <code>{public_hash}</code>\n"
+                f"🔑 <b>Секретный ключ:</b> <code>{secret_seed}</code>",
+                parse_mode="HTML",
+                reply_markup=builder.as_markup()
+            )
+        except:
+            pass
+
+    if winner_id:
+        try:
+            await bot.send_message(
+                winner_id,
+                f"🏆 <b>Поздравляем, ты победил!</b>\n\n"
+                f"🎁 Твой приз: {lottery[1]}\n\n"
+                f"📩 Чтобы получить приз, напиши админу: @fourwayeu\n"
+                f"Укажи ID лотереи: {lottery_id}",
+                parse_mode="HTML"
+            )
+        except:
+            pass
+
+    # УВЕДОМЛЕНИЕ АДМИНУ (теперь точно работает)
+    await notify_admin(
+        f"🏆 <b>Лотерея «{lottery[1]}» завершена!</b>\n\n"
+        f"<b>Участники:</b>\n{participants_text}\n\n"
+        f"<b>Победитель:</b> {winner_display}\n"
+        f"<b>Секретный ключ:</b> {secret_seed}\n"
+        f"<b>Публичный хеш:</b> {public_hash}"
+    )
+
+@dp.callback_query(F.data.startswith("confirm_payment_"))
+async def confirm_payment(callback: types.CallbackQuery):
+    slot_id = int(callback.data.split("_")[2])
+
+    slot_info = await get_slot_info(slot_id)
+    if slot_info:
+        user_id, username, lottery_id, prize_name, amount = slot_info
+        user_display = f"@{username}" if username else f"ID: {user_id}"
+        admin_text = (
+            f"🔔 <b>Новая оплата ожидает подтверждения!</b>\n\n"
+            f"👤 Пользователь: {user_display}\n"
+            f"🎁 Лотерея: {prize_name}\n"
+            f"💰 Сумма: {amount} ₽\n"
+            f"🆔 ID слота: {slot_id}\n"
+            f"💳 Оплата на карту: <code>{CARD_NUMBER}</code>\n\n"
+            f"Проверь поступление в банке и нажми кнопку ниже."
+        )
+        builder = InlineKeyboardBuilder()
+        builder.row(InlineKeyboardButton(text="✅ Подтвердить оплату", callback_data=f"approve_payment_{slot_id}"))
+        builder.row(InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_payment_{slot_id}"))
+        await notify_admin(admin_text, builder.as_markup())
+
+    await callback.message.edit_text(
+        "⏳ Запрос на подтверждение оплаты отправлен админу.\n"
+        "Как только админ подтвердит, твой слот будет активирован!",
+        reply_markup=main_menu_keyboard()
+    )
+    await callback.answer("✅ Запрос отправлен! Ожидай подтверждения.", show_alert=True)
+
+@dp.callback_query(F.data.startswith("approve_payment_"))
+async def approve_payment(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("⛔ Только админ может подтверждать оплату", show_alert=True)
+        return
+
+    slot_id = int(callback.data.split("_")[2])
+    await mark_slot_paid(slot_id)
+
+    slot_info = await get_slot_info(slot_id)
+    if slot_info:
+        user_id, username, lottery_id, prize_name, amount = slot_info
+
+        try:
+            await bot.send_message(
+                user_id,
+                f"✅ Твоя оплата за слот в лотерее «{prize_name}» подтверждена!\n"
+                f"🎲 Слот успешно активирован. Жди завершения розыгрыша!"
+            )
+        except:
+            pass
+
+        if await check_lottery_full(lottery_id):
+            await finish_lottery(lottery_id)
+
+    await callback.message.edit_text(f"✅ Оплата слота #{slot_id} подтверждена!")
+    await callback.answer("Оплата подтверждена", show_alert=True)
+
+@dp.callback_query(F.data.startswith("reject_payment_"))
+async def reject_payment(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("⛔ Только админ может отклонять оплату", show_alert=True)
+        return
+
+    slot_id = int(callback.data.split("_")[2])
+    slot_info = await get_slot_info(slot_id)
+
+    if slot_info:
+        user_id, username, lottery_id, prize_name, amount = slot_info
+        async with aiosqlite.connect(DATABASE) as db:
+            await db.execute("DELETE FROM slots WHERE id = ?", (slot_id,))
+            await db.commit()
+
+        try:
+            await bot.send_message(
+                user_id,
+                f"❌ Твоя оплата за слот в лотерее «{prize_name}» не подтверждена.\n"
+                f"Возможно, деньги не поступили. Попробуй ещё раз или свяжись с админом."
+            )
+        except:
+            pass
+
+    await callback.message.edit_text(f"❌ Оплата слота #{slot_id} отклонена.")
+    await callback.answer("Оплата отклонена", show_alert=True)
+
+@dp.callback_query(F.data == "my_participations")
+async def my_participations(callback: types.CallbackQuery):
+    if not await is_subscribed(callback.from_user.id):
+        await callback.answer("❌ Сначала подпишись на канал!", show_alert=True)
+        return
+
+    parts = await get_user_participations(callback.from_user.id)
+    if not parts:
+        await callback.message.edit_text(
+            "😕 Ты пока не участвовал в лотереях. Самое время начать!",
+            reply_markup=main_menu_keyboard()
+        )
+        await callback.answer()
+        return
+
+    text = "📊 <b>Твои участия в лотереях</b>\n\n"
+    for lid, prize, slot, status, winner_id in parts:
+        status_emoji = "🏆" if status == 'finished' and winner_id == callback.from_user.id else "⏳" if status == 'active' else "✅"
+        text += f"{status_emoji} {prize} — Слот #{slot}\n"
+
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🔙 Вернуться в меню", callback_data="main_menu"))
+
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
+    await callback.answer()
+
+# ---------- Веб-сервер и самопинг ----------
+async def healthcheck(request):
+    return web.Response(text="OK")
+
+async def run_web_server():
+    app = web.Application()
+    app.router.add_get("/", healthcheck)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    logging.info(f"Web server started on port {PORT}")
+
+async def self_ping(port: int):
+    await asyncio.sleep(30)
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"http://0.0.0.0:{port}/") as resp:
+                    logging.info(f"Self-ping: {resp.status}")
+        except Exception as e:
+            logging.warning(f"Self-ping failed: {e}")
+        await asyncio.sleep(300)
+
+# ---------- Запуск ----------
+async def main():
+    await init_db()
+    asyncio.create_task(self_ping(PORT))
+    await asyncio.gather(
+        dp.start_polling(bot),
+        run_web_server()
+    )
+
+if __name__ == "__main__":
+    asyncio.run(main())
