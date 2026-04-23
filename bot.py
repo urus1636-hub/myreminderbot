@@ -141,7 +141,7 @@ async def create_lottery(name, price, total):
 
 async def get_active_lotteries():
     async with aiosqlite.connect(DATABASE) as db:
-        cur = await db.execute("SELECT id, prize_name, slot_price, total_slots, taken_slots FROM lotteries WHERE status='active' AND taken_slots < total_slots ORDER BY id DESC")
+        cur = await db.execute("SELECT id, prize_name, slot_price, total_slots, taken_slots FROM lotteries WHERE status='active' ORDER BY id DESC")
         return await cur.fetchall()
 
 async def get_lottery(lid):
