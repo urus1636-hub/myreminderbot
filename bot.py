@@ -134,13 +134,14 @@ async def create_lottery(name, price, total):
     seed = secrets.token_hex(16)
     h = hashlib.sha256(seed.encode()).hexdigest()
     async with aiosqlite.connect(DATABASE) as db:
-        cur = await db.execute("INSERT INTO lotteries (prize_name, slot_price, total_slots, secret_seed, public_hash) VALUES (?,?,?,?,?)", (name, price, total, seed, h))
+        cur = await db.execute("INSERT INTO lotteries (prize_name, slot_price, total_slots, secret_seed, public_hash, status, taken_slots) VALUES (?,?,?,?,?,?,?)", 
+                               (name, price, total, seed, h, 'active', 0))
         await db.commit()
         return cur.lastrowid, seed, h
 
 async def get_active_lotteries():
     async with aiosqlite.connect(DATABASE) as db:
-        cur = await db.execute("SELECT id, prize_name, slot_price, total_slots, taken_slots FROM lotteries WHERE status='active' AND taken_slots < total_slots ORDER BY id DESC")
+        cur = await db.execute("SELECT id, prize_name, slot_price, total_slots, taken_slots FROM lotteries WHERE status = 'active' AND taken_slots < total_slots ORDER BY id DESC")
         return await cur.fetchall()
 
 async def get_all_lotteries():
@@ -367,7 +368,7 @@ async def slots(message: types.Message, state: FSMContext):
         return
     data = await state.get_data()
     lid, seed, h = await create_lottery(data["prize_name"], data["slot_price"], s)
-    await message.answer(f"✅ <b>Лотерея создана!</b>\n\n🎁 Приз: {data['prize_name']}\n💰 Цена слота: {data['slot_price']} ₽\n🎰 Слотов: {s}\n\n🔒 <b>Хеш:</b> <code>{h}</code>", parse_mode="HTML", reply_markup=admin_menu_keyboard())
+    await message.answer(f"✅ <b>Лотерея создана!</b>\n\n🎁 Приз: {data['prize_name']}\n💰 Цена слота: {data['slot_price']} ₽\n🎰 Слотов: {s}\n\n🔒 <b>Хеш:</b> <code>{h}</code>\n\n⚠️ Лотерея появится в списке активных, когда начнётся приём слотов.", parse_mode="HTML", reply_markup=admin_menu_keyboard())
     await state.clear()
 
 @dp.callback_query(F.data=="admin_list")
@@ -450,7 +451,6 @@ async def edit_value(message: types.Message, state: FSMContext):
     
     await update_lottery_field(lid, field, val)
     
-    # Проверяем, что обновилось
     updated_lot = await get_lottery(lid)
     if updated_lot:
         await message.answer(f"✅ Лотерея обновлена!\n\n🎁 Название: {updated_lot[1]}\n💰 Цена: {updated_lot[2]}₽\n🎰 Слотов: {updated_lot[3]}", parse_mode="HTML", reply_markup=admin_menu_keyboard())
